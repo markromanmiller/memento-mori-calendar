@@ -6,11 +6,19 @@ export interface MementoSettings {
   entriesDir: string;
   /** Birth date in YYYY-MM-DD format. Day 0 of the visualization. */
   birthDate: string;
+  /**
+   * Degrees subtracted from 90° to get the Hilbert curve turn angle.
+   * At 0 the curve has perfect right angles; higher values introduce a
+   * diagonal drift that gives the visualization a more organic look.
+   * Default: 1 (turnAngle = 89°).
+   */
+  curveSkew: number;
 }
 
 export const DEFAULT_SETTINGS: MementoSettings = {
   entriesDir: 'Memento Mori',
   birthDate: '1994-12-29',
+  curveSkew: 1,
 };
 
 export class MementoSettingTab extends PluginSettingTab {
@@ -35,6 +43,26 @@ export class MementoSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.birthDate = value.trim();
             await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Curve skew')
+      .setDesc(
+        'Degrees subtracted from a perfect 90° turn. ' +
+        'Higher values give the curve a more diagonal, organic appearance. ' +
+        'Default: 1. Changing this rebuilds the entire geometry.'
+      )
+      .addText(text =>
+        text
+          .setPlaceholder('1')
+          .setValue(String(this.plugin.settings.curveSkew))
+          .onChange(async (value) => {
+            const n = parseFloat(value);
+            if (!isNaN(n) && n >= 0 && n < 90) {
+              this.plugin.settings.curveSkew = n;
+              await this.plugin.saveSettings();
+            }
           })
       );
 

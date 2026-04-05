@@ -64,12 +64,11 @@ export function parseVaultData(
   totalCells: number
 ): VaultData {
   const birth = new Date(settings.birthDate + 'T00:00:00');
-  const empty: VaultData = {
+  if (isNaN(birth.getTime())) return {
     perspectives: [],
-    dayColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, buildDefaultColors(totalCells, birth)]]),
+    dayColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Array<string>(totalCells).fill(GRAY)]]),
     labelEntries: [],
   };
-  if (isNaN(birth.getTime())) return empty;
 
   const dirPath = settings.entriesDir.replace(/\/$/, '');
 

@@ -86,8 +86,8 @@ class MementoView extends ItemView {
     controls.appendChild(sel);
     container.appendChild(controls);
 
-    // Geometry
-    this.cells = buildGeometry();
+    // Geometry — turnAngle = 90° minus the configured skew
+    this.cells = buildGeometry(7, 90 - this.plugin.settings.curveSkew);
 
     // Resize
     const ro = new ResizeObserver(() => {
