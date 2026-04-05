@@ -5,5 +5,5 @@
   "minAppVersion": "1.0.0",
   "description": "Lifetime visualization as a Hilbert curve.",
   "author": "mark",
-  "isDesktopOnly": true
+  "isDesktopOnly": false
 }
