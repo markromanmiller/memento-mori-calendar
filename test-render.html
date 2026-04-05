@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #f5f5f2; }
+  canvas { display: block; background: #f5f5f2; }
+</style>
+</head>
+<body>
+<canvas id="c" width="900" height="900"></canvas>
+<script>
+// ---- geometry.js (inlined) ----
+
+function generateLSystem(order) {
+  const rules = { A: '-BF+AFA+FB-', B: '+AF-BFB-FA+' };
+  let s = 'A';
+  for (let i = 0; i < order; i++) {
+    let next = '';
+    for (const ch of s) next += rules[ch] ?? ch;
+    s = next;
+  }
+  return s;
+}
+
+function tracePoints(lsystem, turnAngle) {
+  let x = 0, y = 0, angle = 0;
+  const positions = [[x, y]];
+  for (const ch of lsystem) {
+    if (ch === 'F') {
+      x += Math.cos(angle * Math.PI / 180);
+      y += Math.sin(angle * Math.PI / 180);
+      positions.push([x, y]);
+    } else if (ch === '+') angle -= turnAngle;
+    else if (ch === '-') angle += turnAngle;
+  }
+  const angleIn = new Array(positions.length).fill(null);
+  const angleOut = new Array(positions.length).fill(null);
+  let ptIdx = 0; angle = 0;
+  for (const ch of lsystem) {
+    if (ch === 'F') {
+      angleOut[ptIdx] = angle; ptIdx++; angleIn[ptIdx] = angle;
+    } else if (ch === '+') angle -= turnAngle;
+    else if (ch === '-') angle += turnAngle;
+  }
+  return positions.map(([px, py], i) => ({
+    x: px, y: py,
+    angleIn: angleIn[i] ?? angleOut[i],
+    angleOut: angleOut[i] ?? angleIn[i],
+  }));
+}
+
+function normalizePoints(pts, targetSize) {
+  const minX = Math.min(...pts.map(p => p.x));
+  const minY = Math.min(...pts.map(p => p.y));
+  const maxX = Math.max(...pts.map(p => p.x));
+  const maxY = Math.max(...pts.map(p => p.y));
+  const scale = targetSize / Math.max(maxX - minX, maxY - minY);
+  return {
+    pts: pts.map(p => ({ ...p, x: (p.x - minX) * scale, y: (p.y - minY) * scale })),
+    cellSize: scale,
+  };
+}
+
+const INSET = 0.2;
+
+function insetPolygon(pts, d) {
+  const n = pts.length;
+  const cx = pts.reduce((s,p)=>s+p[0],0)/n;
+  const cy = pts.reduce((s,p)=>s+p[1],0)/n;
+  return pts.map((b, i) => {
+    const a = pts[(i-1+n)%n], c = pts[(i+1)%n];
+    let dx1=b[0]-a[0], dy1=b[1]-a[1]; const l1=Math.hypot(dx1,dy1); dx1/=l1; dy1/=l1;
+    let nx1=dy1, ny1=-dx1;
+    if (nx1*(cx-(a[0]+b[0])/2)+ny1*(cy-(a[1]+b[1])/2)<0){nx1=-nx1;ny1=-ny1;}
+    let dx2=c[0]-b[0], dy2=c[1]-b[1]; const l2=Math.hypot(dx2,dy2); dx2/=l2; dy2/=l2;
+    let nx2=dy2, ny2=-dx2;
+    if (nx2*(cx-(b[0]+c[0])/2)+ny2*(cy-(b[1]+c[1])/2)<0){nx2=-nx2;ny2=-ny2;}
+    const p1x=b[0]+d*nx1, p1y=b[1]+d*ny1, p2x=b[0]+d*nx2, p2y=b[1]+d*ny2;
+    const denom=dx1*dy2-dy1*dx2;
+    if (Math.abs(denom)<1e-10) return [p1x,p1y];
+    const t=((p2x-p1x)*dy2-(p2y-p1y)*dx2)/denom;
+    return [p1x+t*dx1, p1y+t*dy1];
+  });
+}
+
+function makeRects(x, y, cellSize, angle) {
+  const short=cellSize/2, long=cellSize, offset=cellSize/4;
+  const rad=angle*Math.PI/180, cos=Math.cos(rad), sin=Math.sin(rad);
+  const hw=short/2, hh=long/2;
+  const localCorners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]];
+  return [-1,1].map(sign => {
+    const cx=x+sign*offset*cos, cy=y+sign*offset*sin;
+    const pts=localCorners.map(([lx,ly])=>[cx+lx*cos-ly*sin, cy+lx*sin+ly*cos]);
+    return { points: insetPolygon(pts, INSET) };
+  });
+}
+
+function makeTris(x, y, cellSize, angleIn, angleOut) {
+  const rad = d => d * Math.PI / 180;
+  const vIn = [Math.cos(rad(angleIn)), Math.sin(rad(angleIn))];
+  const vOut = [Math.cos(rad(angleOut)), Math.sin(rad(angleOut))];
+  const bis = [(vIn[0]+vOut[0])/2, (vIn[1]+vOut[1])/2];
+  const bisAngle = Math.atan2(bis[1], bis[0]) * 180 / Math.PI;
+  const diagAngle = bisAngle + 90;
+  const halfDiag = cellSize * Math.sqrt(2) / 2;
+  const dr = rad(diagAngle), pr = rad(diagAngle + 90);
+  const c1 = [x+halfDiag*Math.cos(dr), y+halfDiag*Math.sin(dr)];
+  const c2 = [x-halfDiag*Math.cos(dr), y-halfDiag*Math.sin(dr)];
+  const c3 = [x+halfDiag*Math.cos(pr), y+halfDiag*Math.sin(pr)];
+  const c4 = [x-halfDiag*Math.cos(pr), y-halfDiag*Math.sin(pr)];
+  return [
+    { points: insetPolygon([c1,c3,c2], INSET) },
+    { points: insetPolygon([c1,c4,c2], INSET) },
+  ];
+}
+
+function buildGeometry(order=7, turnAngle=89, worldSize=600) {
+  const ls = generateLSystem(order);
+  const raw = tracePoints(ls, turnAngle);
+  const { pts, cellSize } = normalizePoints(raw, worldSize);
+  const cells = [];
+  for (const { x, y, angleIn, angleOut } of pts) {
+    if (angleIn === null || angleOut === null) {
+      cells.push(...makeRects(x, y, cellSize, angleIn ?? angleOut ?? 0));
+      continue;
+    }
+    const diff = Math.abs(((angleOut - angleIn) % 360 + 360) % 360);
+    const isTurn = diff > 5 && Math.abs(diff - 360) > 5;
+    cells.push(...(isTurn ? makeTris(x,y,cellSize,angleIn,angleOut) : makeRects(x,y,cellSize,angleIn)));
+  }
+  return cells;
+}
+
+// ---- fake data ----
+
+const BIRTH = new Date('1994-12-29T00:00:00');
+const TODAY = new Date('2026-04-04T00:00:00');
+
+function dayIdx(dateStr) {
+  return Math.floor((new Date(dateStr + 'T00:00:00') - BIRTH) / 86400000);
+}
+
+const todayIndex = Math.floor((TODAY - BIRTH) / 86400000);
+const totalCells = 32768;
+
+// Month-based default colors
+const dayColors = new Array(totalCells);
+for (let i = 0; i < totalCells; i++) {
+  const date = new Date(BIRTH.getTime() + i * 86400000);
+  const month = date.getMonth();
+  const hue = Math.round(month * (240 / 11));
+  dayColors[i] = `hsl(${hue}, 65%, 62%)`;
+}
+
+// Location perspective ranges
+const ranges = [
+  { startDay: dayIdx('1994-12-29'), endDay: dayIdx('2009-08-23'), color: '#FFD700', duration: dayIdx('2009-08-23') - dayIdx('1994-12-29') },
+  { startDay: dayIdx('2016-09-25'), endDay: dayIdx('2023-07-31'), color: '#4A90D9', duration: dayIdx('2023-07-31') - dayIdx('2016-09-25') },
+];
+const eventDays = [dayIdx('2019-07-13')];
+ranges.sort((a, b) => b.duration - a.duration);
+// (not applying to dayColors here — showing default Month perspective)
+
+// Labels
+const labelEntries = [
+  { startLabel: 'Start of Childhood', endLabel: 'End of Childhood', startDay: dayIdx('1994-12-29'), endDay: dayIdx('2009-08-23') },
+  { startLabel: 'Start of Stanford years', endLabel: 'End of Stanford years', startDay: dayIdx('2016-09-25'), endDay: dayIdx('2023-07-31') },
+  { startLabel: 'Wedding', endLabel: null, startDay: dayIdx('2019-07-13'), endDay: dayIdx('2019-07-13') },
+];
+
+// Apply events to default colors
+for (const d of eventDays) if (d >= 0 && d < totalCells) dayColors[d] = '#000000';
+
+// ---- render ----
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 900, H = 900;
+
+const cells = buildGeometry();
+const worldSize = 600, padding = 24;
+const scale = (Math.min(W, H) - padding*2) / worldSize;
+const tx = (W - worldSize*scale) / 2;
+const ty = (H - worldSize*scale) / 2;
+
+ctx.clearRect(0, 0, W, H);
+ctx.save();
+ctx.setTransform(scale, 0, 0, scale, tx, ty);
+
+const total = cells.length;
+
+for (let i = 0; i < total; i++) {
+  const { points } = cells[i];
+  ctx.fillStyle = dayColors[i];
+  ctx.globalAlpha = i > todayIndex ? 0.2 : 1.0;
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let j = 1; j < points.length; j++) ctx.lineTo(points[j][0], points[j][1]);
+  ctx.closePath();
+  ctx.fill();
+}
+
+ctx.globalAlpha = 1.0;
+
+// Labels — screen space
+ctx.restore(); // back to identity
+ctx.font = '13px system-ui, sans-serif';
+ctx.textAlign = 'center';
+ctx.textBaseline = 'bottom';
+ctx.lineJoin = 'round';
+ctx.lineWidth = 3;
+
+function cellCentroid(cell) {
+  const pts = cell.points, n = pts.length;
+  return [pts.reduce((s,p)=>s+p[0],0)/n, pts.reduce((s,p)=>s+p[1],0)/n];
+}
+
+function drawScreenLabel(text, day) {
+  const idx = Math.max(0, Math.min(totalCells-1, day));
+  const [wx, wy] = cellCentroid(cells[idx]);
+  const sx = wx * scale + tx, sy = wy * scale + ty;
+  ctx.strokeStyle = '#f5f5f2'; ctx.strokeText(text, sx, sy);
+  ctx.fillStyle = '#222'; ctx.fillText(text, sx, sy);
+}
+
+for (const entry of labelEntries) {
+  drawScreenLabel(entry.startLabel, entry.startDay);
+  if (entry.endLabel !== null && entry.endDay !== entry.startDay)
+    drawScreenLabel(entry.endLabel, entry.endDay);
+}
+
+ctx.fillStyle = 'rgba(0,0,0,0.4)';
+ctx.font = '13px monospace';
+ctx.textAlign = 'left';
+ctx.textBaseline = 'bottom';
+ctx.fillText(`${total.toLocaleString()} cells · zoom 1.00×`, 10, H - 8);
+
+document.title = 'render-done';
+</script>
+</body>
+</html>

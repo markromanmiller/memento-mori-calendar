@@ -1,0 +1,9 @@
+{
+  "id": "memento-mori",
+  "name": "Memento Mori",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Lifetime visualization as a Hilbert curve.",
+  "author": "mark",
+  "isDesktopOnly": true
+}
