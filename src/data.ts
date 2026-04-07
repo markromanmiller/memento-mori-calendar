@@ -1,10 +1,48 @@
+/**
+ * Frontmatter schema for entry files in the configured entries folder.
+ *
+ * RANGE  (mm: range)
+ * ──────────────────────────────────────────────────────────────────────
+ *   mm-title:            string    display title (default: filename)
+ *   mm-start:            YYYY-MM-DD
+ *   mm-end:              YYYY-MM-DD  (omit or leave blank for ongoing)
+ *   mm-ongoing:          true        end tracks today; hides end marker
+ *   mm-color:            CSS color   hex, named, hsl(), etc.
+ *   mm-color-perspective: string     perspective name; required for color to apply
+ *   mm-title-start:      string      start label (default: "Start of <title>")
+ *   mm-title-end:        string      end label   (default: "End of <title>")
+ *   mm-minzoom:          number      log2(scale/fitScale); hide label below this zoom
+ *   mm-tags:             string[]    reserved for future use
+ *
+ * EVENT  (mm: event)
+ * ──────────────────────────────────────────────────────────────────────
+ *   mm-title:            string    display title (default: filename)
+ *   mm-date:             YYYY-MM-DD  (blank → file exists but is not rendered)
+ *   mm-minzoom:          number      same as range
+ *   mm-tags:             string[]    reserved for future use
+ *
+ * ZOOM LEVELS  (mm-minzoom reference)
+ * ──────────────────────────────────────────────────────────────────────
+ *   0   = full calendar fits viewport (1× zoom in HUD)
+ *   1   = 2× fit       4   = 16× fit
+ *   2   = 4× fit       4.5 = ~22× fit  (zoom-to-today default)
+ *   3   = 8× fit       ...
+ */
+
 import { App } from 'obsidian';
 import { MementoSettings } from './settings';
 
 export const DEFAULT_PERSPECTIVE = 'Default';
-const GRAY = '#6b6b6b';
-// Sentinel resolved at draw time to --text-normal (adapts to light/dark theme)
-const EVENT_COLOR = 'default';
+
+/** Uncoloured cells in custom perspectives. Exported for use in draw alpha logic. */
+export const GRAY = '#6b6b6b';
+
+/**
+ * Sentinel colour for event/boundary days in the Default perspective.
+ * Resolved at draw time to --text-normal so it adapts to light/dark theme.
+ * Exported so the draw loop can distinguish explicit from background colours.
+ */
+export const EVENT_COLOR = 'default';
 
 function parseDate(s: unknown): Date | null {
   if (typeof s !== 'string' || !s) return null;
@@ -43,7 +81,7 @@ export type VaultData = {
 };
 
 // ---------------------------------------------------------------------------
-// Month-based default colors (hue cycles red→blue over Jan→Dec)
+// Default perspective colors (hue cycles red→blue over Jan→Dec by month)
 // ---------------------------------------------------------------------------
 
 function buildDefaultColors(totalCells: number, birth: Date): string[] {

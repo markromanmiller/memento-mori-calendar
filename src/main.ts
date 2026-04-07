@@ -2,10 +2,11 @@ import { ItemView, Menu, Plugin, WorkspaceLeaf, setIcon } from 'obsidian';
 import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zoom';
 import { select } from 'd3-selection';
 import { buildGeometry, Cell } from './geometry';
-import { parseVaultData, getTodayIndex, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
+import { parseVaultData, getTodayIndex, VaultData, DEFAULT_PERSPECTIVE, GRAY, EVENT_COLOR } from './data';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
+const TOTAL_CELLS = 32768; // 2 × 4^7 — two cells per L-system point at order 7
 
 /**
  * Wrap text so width/height ≤ maxRatio:1, using the most even split possible.
@@ -54,7 +55,6 @@ function wrapToRatio(
 }
 
 function cellCentroid(cell: Cell): [number, number] {
-
   const pts = cell.points;
   const n = pts.length;
   return [
@@ -207,9 +207,9 @@ class MementoView extends ItemView {
     if (!canvas || !zb || this.cells.length === 0) return;
 
     const total = this.cells.length;
-    const window = 14;
-    const start = Math.max(0, this.todayIndex - window);
-    const end = Math.min(total - 1, this.todayIndex + window);
+    const windowDays = 14;
+    const start = Math.max(0, this.todayIndex - windowDays);
+    const end = Math.min(total - 1, this.todayIndex + windowDays);
 
     // Center of mass of ±14-day cell window
     let sumX = 0, sumY = 0, count = 0;
@@ -257,11 +257,11 @@ class MementoView extends ItemView {
       const rawColor = hasColors
         ? dayColors![i]
         : `hsl(${Math.round((i / total) * 360)}, 45%, 65%)`;
-      const baseColor = rawColor === 'default' ? themeTextColor : rawColor;
+      const baseColor = rawColor === EVENT_COLOR ? themeTextColor : rawColor;
 
       ctx.fillStyle = baseColor;
       // Plain cells (month hsl or gray placeholder) fade to 0.2; event/range cells to 0.5
-      const isPlain = rawColor.startsWith('hsl(') || rawColor === '#6b6b6b';
+      const isPlain = rawColor.startsWith('hsl(') || rawColor === GRAY;
       ctx.globalAlpha = i > this.todayIndex ? (isPlain ? 0.2 : 0.5) : 1.0;
 
       ctx.beginPath();
@@ -491,8 +491,7 @@ export default class MementoMoriPlugin extends Plugin {
     const view = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]
       ?.view as MementoView | undefined;
     if (!view) return;
-    const totalCells = 32768;
-    const data = parseVaultData(this.app, this.settings, totalCells);
+    const data = parseVaultData(this.app, this.settings, TOTAL_CELLS);
     const todayIndex = getTodayIndex(this.settings.birthDate);
     view.setVaultData(data, todayIndex);
   }

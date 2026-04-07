@@ -1,3 +1,16 @@
+# Release workflow for Memento Mori Obsidian plugin.
+#
+# RELEASE PROCESS (run locally before pushing a tag):
+#   1. npm version patch|minor|major   — bumps package.json AND manifest.json (via `version` script) AND commits
+#   2. git push && git push --tags     — triggers this workflow
+#
+# The workflow builds main.js and attaches main.js + manifest.json to the
+# GitHub release. Obsidian's BRAT plugin (and the community plugin registry)
+# fetch these two files from the release assets.
+#
+# IMPORTANT: The git tag, package.json version, and manifest.json version
+# must all match. Using `npm version` with the lifecycle script ensures this.
+
 name: Release
 
 on:
