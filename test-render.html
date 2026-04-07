@@ -170,15 +170,17 @@ const eventDays = [dayIdx('2019-07-13')];
 ranges.sort((a, b) => b.duration - a.duration);
 // (not applying to dayColors here — showing default Month perspective)
 
-// Labels
+// Labels — includes same-day stack test
 const labelEntries = [
-  { startLabel: 'Start of Childhood', endLabel: 'End of Childhood', startDay: dayIdx('1994-12-29'), endDay: dayIdx('2009-08-23') },
-  { startLabel: 'Start of Stanford years', endLabel: 'End of Stanford years', startDay: dayIdx('2016-09-25'), endDay: dayIdx('2023-07-31') },
-  { startLabel: 'Wedding', endLabel: null, startDay: dayIdx('2019-07-13'), endDay: dayIdx('2019-07-13') },
+  { startLabel: 'Start of Childhood', endLabel: 'End of Childhood', startDay: dayIdx('1994-12-29'), endDay: dayIdx('2009-08-23'), minZoom: undefined },
+  { startLabel: 'Start of Stanford Years', endLabel: 'End of Stanford Years', startDay: dayIdx('2016-09-25'), endDay: dayIdx('2023-07-31'), minZoom: undefined },
+  { startLabel: 'Wedding', endLabel: null, startDay: dayIdx('2019-07-13'), endDay: dayIdx('2019-07-13'), minZoom: undefined },
+  { startLabel: "Annie's Birthday Party", endLabel: null, startDay: dayIdx('2019-07-13'), endDay: dayIdx('2019-07-13'), minZoom: undefined },
+  { startLabel: 'Summer Solstice Hike', endLabel: null, startDay: dayIdx('2019-07-13'), endDay: dayIdx('2019-07-13'), minZoom: undefined },
 ];
 
 // Apply events to default colors
-for (const d of eventDays) if (d >= 0 && d < totalCells) dayColors[d] = '#000000';
+for (const d of eventDays) if (d >= 0 && d < totalCells) dayColors[d] = '#222';
 
 // ---- render ----
 
@@ -211,31 +213,115 @@ for (let i = 0; i < total; i++) {
 
 ctx.globalAlpha = 1.0;
 
-// Labels — screen space
+// Labels — full pipeline
 ctx.restore(); // back to identity
-ctx.font = '13px system-ui, sans-serif';
-ctx.textAlign = 'center';
-ctx.textBaseline = 'bottom';
-ctx.lineJoin = 'round';
-ctx.lineWidth = 3;
 
 function cellCentroid(cell) {
   const pts = cell.points, n = pts.length;
   return [pts.reduce((s,p)=>s+p[0],0)/n, pts.reduce((s,p)=>s+p[1],0)/n];
 }
 
-function drawScreenLabel(text, day) {
-  const idx = Math.max(0, Math.min(totalCells-1, day));
-  const [wx, wy] = cellCentroid(cells[idx]);
-  const sx = wx * scale + tx, sy = wy * scale + ty;
-  ctx.strokeStyle = '#f5f5f2'; ctx.strokeText(text, sx, sy);
-  ctx.fillStyle = '#222'; ctx.fillText(text, sx, sy);
+function wrapToRatio(ctx, text, lineH, stackH = lineH, maxRatio = 5) {
+  const words = text.split(' ');
+  const spW = ctx.measureText(' ').width;
+  const ww = words.map(w => ctx.measureText(w).width);
+  const minPossible = Math.max(...ww);
+  const wrap = (budget) => {
+    const lines = []; let cur = 0, start = 0;
+    for (let i = 0; i < words.length; i++) {
+      const next = i === start ? ww[i] : cur + spW + ww[i];
+      if (i > start && next > budget) { lines.push(words.slice(start,i).join(' ')); start=i; cur=ww[i]; }
+      else cur = next;
+    }
+    lines.push(words.slice(start).join(' '));
+    return lines;
+  };
+  for (let n = 1; n <= 8; n++) {
+    const ratioLimit = maxRatio * Math.max(n * lineH, stackH);
+    if (wrap(ratioLimit).length > n) continue;
+    let lo = minPossible, hi = ratioLimit;
+    for (let iter = 0; iter < 24; iter++) {
+      const mid = (lo+hi)/2;
+      if (wrap(mid).length <= n) hi = mid; else lo = mid;
+    }
+    return wrap(hi);
+  }
+  return [text];
 }
 
+const LINE_H = 16, PAD = 3;
+ctx.font = '13px system-ui, sans-serif';
+ctx.textAlign = 'center';
+ctx.textBaseline = 'bottom';
+ctx.lineJoin = 'round';
+ctx.lineWidth = 3;
+
+// Pre-count labels per anchor
+const anchorCounts = new Map();
+for (const e of labelEntries) {
+  const inc = idx => anchorCounts.set(idx, (anchorCounts.get(idx)??0)+1);
+  inc(Math.max(0, Math.min(totalCells-1, e.startDay)));
+  if (e.endLabel !== null && e.endDay !== e.startDay)
+    inc(Math.max(0, Math.min(totalCells-1, e.endDay)));
+}
+
+// Build candidates
+const candidates = [];
 for (const entry of labelEntries) {
-  drawScreenLabel(entry.startLabel, entry.startDay);
-  if (entry.endLabel !== null && entry.endDay !== entry.startDay)
-    drawScreenLabel(entry.endLabel, entry.endDay);
+  const add = (text, day) => {
+    const anchorIdx = Math.max(0, Math.min(totalCells-1, day));
+    const [wx, wy] = cellCentroid(cells[anchorIdx]);
+    const sx = wx*scale+tx, sy = wy*scale+ty;
+    const stackH = (anchorCounts.get(anchorIdx)??1)*LINE_H;
+    const lines = wrapToRatio(ctx, text, LINE_H, stackH);
+    const boxW = Math.max(...lines.map(l=>ctx.measureText(l).width)) + PAD*2;
+    const boxH = lines.length*LINE_H + PAD*2;
+    candidates.push({ lines, sx, sy, boxW, boxH, anchorIdx, priority: entry.minZoom??-Infinity, name: text });
+  };
+  add(entry.startLabel, entry.startDay);
+  if (entry.endLabel !== null && entry.endDay !== entry.startDay) add(entry.endLabel, entry.endDay);
+}
+
+candidates.sort((a,b) => a.priority!==b.priority ? a.priority-b.priority : a.name.localeCompare(b.name));
+
+// Occlusion + commit
+const anchors = new Map();
+const overlapsOthers = (box, skipIdx) => {
+  for (const [idx, a] of anchors) {
+    if (idx===skipIdx) continue;
+    if (box.r>a.box.l && box.l<a.box.r && box.b>a.box.t && box.t<a.box.b) return true;
+  }
+  return false;
+};
+
+for (const c of candidates) {
+  const existing = anchors.get(c.anchorIdx);
+  const newTotalH = (existing?.totalH??0)+c.boxH;
+  const hw = c.boxW/2;
+  const proposed = {
+    l: Math.min(existing?.box.l??(c.sx-hw), c.sx-hw),
+    r: Math.max(existing?.box.r??(c.sx+hw), c.sx+hw),
+    t: c.sy - newTotalH/2, b: c.sy + newTotalH/2,
+  };
+  if (overlapsOthers(proposed, c.anchorIdx)) continue;
+  anchors.set(c.anchorIdx, {
+    box: proposed, totalH: newTotalH, cellSy: c.sy,
+    labels: [...(existing?.labels??[]), { lines: c.lines, sx: c.sx, boxH: c.boxH }],
+  });
+}
+
+// Draw
+for (const [, state] of anchors) {
+  let curBottom = state.cellSy + state.totalH/2;
+  for (const label of state.labels) {
+    const drawBottom = curBottom - PAD;
+    for (let i = label.lines.length-1; i >= 0; i--) {
+      const lineY = drawBottom - (label.lines.length-1-i)*LINE_H;
+      ctx.strokeStyle = '#f5f5f2'; ctx.strokeText(label.lines[i], label.sx, lineY);
+      ctx.fillStyle = '#222';     ctx.fillText(label.lines[i], label.sx, lineY);
+    }
+    curBottom -= label.boxH;
+  }
 }
 
 ctx.fillStyle = 'rgba(0,0,0,0.4)';

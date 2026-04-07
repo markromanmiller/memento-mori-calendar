@@ -1,9 +1,10 @@
 import { App } from 'obsidian';
 import { MementoSettings } from './settings';
 
-export const DEFAULT_PERSPECTIVE = 'Month';
+export const DEFAULT_PERSPECTIVE = 'Default';
 const GRAY = '#6b6b6b';
-const EVENT_COLOR = '#000000';
+// Sentinel resolved at draw time to --text-normal (adapts to light/dark theme)
+const EVENT_COLOR = 'default';
 
 function parseDate(s: unknown): Date | null {
   if (typeof s !== 'string' || !s) return null;
@@ -28,6 +29,8 @@ export type LabelEntry = {
   endLabel: string | null;  // shown at endDay position; null for events (single label)
   startDay: number;
   endDay: number;
+  /** Minimum zoom level (log2 of scale relative to fit-to-viewport) to show this label. */
+  minZoom?: number;
 };
 
 export type VaultData = {
@@ -81,10 +84,12 @@ export function parseVaultData(
     title: string;
     startLabel: string;
     endLabel: string;
+    minZoom?: number;
+    ongoing: boolean;
   };
 
   const ranges: ParsedRange[] = [];
-  const events: { day: number; title: string }[] = [];
+  const events: { day: number; title: string; minZoom?: number }[] = [];
 
   for (const file of app.vault.getMarkdownFiles()) {
     if (file.parent?.path !== dirPath) continue;
@@ -93,9 +98,17 @@ export function parseVaultData(
 
     const title: string = fm['mm-title'] ?? file.basename;
 
+    const minZoom: number | undefined = (() => {
+      const raw = fm['mm-minzoom'];
+      const n = typeof raw === 'number' ? raw : parseFloat(raw);
+      return isNaN(n) ? undefined : n;
+    })();
+
     if (fm.mm === 'range') {
       const start = parseDate(fm['mm-start']);
-      const end = parseDate(fm['mm-end']);
+      const ongoing: boolean = fm['mm-ongoing'] === true;
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const end = ongoing ? today : parseDate(fm['mm-end']);
       const color: string | null = fm['mm-color'] ?? null;
       const perspective: string | null = fm['mm-color-perspective'] ?? null;
       const startLabel: string = fm['mm-title-start'] ?? `Start of ${title}`;
@@ -109,13 +122,13 @@ export function parseVaultData(
             duration: e - s,
             color: color ?? GRAY,
             perspective: (color && perspective) ? perspective : null,
-            title, startLabel, endLabel,
+            title, startLabel, endLabel, minZoom, ongoing,
           });
         }
       }
     } else if (fm.mm === 'event') {
       const date = parseDate(fm['mm-date']);
-      if (date) events.push({ day: dayIndex(date, birth), title });
+      if (date) events.push({ day: dayIndex(date, birth), title, minZoom });
     }
   }
 
@@ -123,15 +136,17 @@ export function parseVaultData(
   const labelEntries: LabelEntry[] = [
     ...ranges.map(r => ({
       startLabel: r.startLabel,
-      endLabel: r.endLabel,
+      endLabel: r.ongoing ? null : r.endLabel,  // ongoing ranges have no visible end
       startDay: r.startDay,
       endDay: r.endDay,
+      minZoom: r.minZoom,
     })),
     ...events.map(e => ({
       startLabel: e.title,
       endLabel: null,
       startDay: e.day,
       endDay: e.day,
+      minZoom: e.minZoom,
     })),
   ];
 
@@ -145,10 +160,10 @@ export function parseVaultData(
 
   // Default month perspective
   const defaultColors = buildDefaultColors(totalCells, birth);
-  // Range boundary days and events all appear black in the default view
+  // Range boundary days appear black in the default view; skip end day for ongoing ranges
   for (const r of ranges) {
     if (r.startDay >= 0 && r.startDay < totalCells) defaultColors[r.startDay] = EVENT_COLOR;
-    if (r.endDay >= 0 && r.endDay < totalCells) defaultColors[r.endDay] = EVENT_COLOR;
+    if (!r.ongoing && r.endDay >= 0 && r.endDay < totalCells) defaultColors[r.endDay] = EVENT_COLOR;
   }
   for (const e of events) {
     if (e.day >= 0 && e.day < totalCells) defaultColors[e.day] = EVENT_COLOR;

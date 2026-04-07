@@ -17,7 +17,7 @@ export interface MementoSettings {
 
 export const DEFAULT_SETTINGS: MementoSettings = {
   entriesDir: 'Memento Mori',
-  birthDate: '1994-12-29',
+  birthDate: '2000-01-01',
   curveSkew: 1,
 };
 

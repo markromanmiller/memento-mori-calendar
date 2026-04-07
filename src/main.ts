@@ -1,5 +1,5 @@
-import { ItemView, Plugin, WorkspaceLeaf } from 'obsidian';
-import { zoom as d3zoom, zoomIdentity, ZoomTransform } from 'd3-zoom';
+import { ItemView, Menu, Plugin, WorkspaceLeaf, setIcon } from 'obsidian';
+import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zoom';
 import { select } from 'd3-selection';
 import { buildGeometry, Cell } from './geometry';
 import { parseVaultData, getTodayIndex, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
@@ -7,8 +7,54 @@ import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings
 
 const VIEW_TYPE = 'memento-mori';
 
+/**
+ * Wrap text so width/height ≤ maxRatio:1, using the most even split possible.
+ *
+ * stackH: estimated total height of the day's label stack (LINE_H × label count).
+ * Allows individual labels to be wider when they share a tall stack.
+ *
+ * For each candidate line count N, binary-searches for the minimum max-line-width
+ * that still allows greedy wrapping to fit in ≤ N lines (monotone property makes
+ * binary search exact). Returns the first N that satisfies the ratio constraint.
+ */
+function wrapToRatio(
+  ctx: CanvasRenderingContext2D, text: string, lineH: number,
+  stackH = lineH, maxRatio = 5,
+): string[] {
+  const words = text.split(' ');
+  const spW = ctx.measureText(' ').width;
+  const ww = words.map(w => ctx.measureText(w).width);
+  const minPossible = Math.max(...ww);
+
+  const wrap = (budget: number): string[] => {
+    const lines: string[] = [];
+    let cur = 0, start = 0;
+    for (let i = 0; i < words.length; i++) {
+      const next = i === start ? ww[i] : cur + spW + ww[i];
+      if (i > start && next > budget) { lines.push(words.slice(start, i).join(' ')); start = i; cur = ww[i]; }
+      else cur = next;
+    }
+    lines.push(words.slice(start).join(' '));
+    return lines;
+  };
+
+  for (let n = 1; n <= 8; n++) {
+    // Width budget: ratio applies to the full stack height, not just this label's height
+    const ratioLimit = maxRatio * Math.max(n * lineH, stackH);
+    if (wrap(ratioLimit).length > n) continue;
+
+    let lo = minPossible, hi = ratioLimit;
+    for (let iter = 0; iter < 24; iter++) {
+      const mid = (lo + hi) / 2;
+      if (wrap(mid).length <= n) hi = mid; else lo = mid;
+    }
+    return wrap(hi);
+  }
+  return [text];
+}
 
 function cellCentroid(cell: Cell): [number, number] {
+
   const pts = cell.points;
   const n = pts.length;
   return [
@@ -25,7 +71,10 @@ class MementoView extends ItemView {
   private todayIndex = 0;
   private transform: ZoomTransform = zoomIdentity;
   private canvas: HTMLCanvasElement | null = null;
-  private select: HTMLSelectElement | null = null;
+  private perspectiveBtn: HTMLButtonElement | null = null;
+  private zoomBehavior: ZoomBehavior<HTMLCanvasElement, unknown> | null = null;
+  /** Scale factor at which the full calendar fits the viewport (zoom level 0). */
+  private fitScale = 1;
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoMoriPlugin) {
     super(leaf);
@@ -38,7 +87,15 @@ class MementoView extends ItemView {
   setVaultData(data: VaultData, todayIndex: number): void {
     this.vaultData = data;
     this.todayIndex = todayIndex;
-    this.syncDropdown();
+    // If the current perspective was removed, fall back to default
+    if (!data.perspectives.includes(this.currentPerspective) &&
+        this.currentPerspective !== DEFAULT_PERSPECTIVE) {
+      this.currentPerspective = DEFAULT_PERSPECTIVE;
+      if (this.perspectiveBtn) {
+        const label = this.perspectiveBtn.querySelector('span:last-child') as HTMLElement | null;
+        if (label) label.textContent = DEFAULT_PERSPECTIVE;
+      }
+    }
     if (this.canvas) this.draw();
   }
 
@@ -56,34 +113,50 @@ class MementoView extends ItemView {
     this.canvas = canvas;
     container.appendChild(canvas);
 
-    // Perspective dropdown
+    // Toolbar (top-right)
     const controls = document.createElement('div');
     controls.style.cssText = `
       position: absolute; top: 8px; right: 8px; z-index: 10;
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: 4px;
     `;
-    const label = document.createElement('span');
-    label.textContent = 'Perspective';
-    label.style.cssText = `
-      font-size: var(--font-ui-small); color: var(--text-muted);
-    `;
-    const sel = document.createElement('select');
-    sel.style.cssText = `
-      background: var(--background-secondary);
-      color: var(--text-normal);
-      border: 1px solid var(--background-modifier-border);
-      border-radius: var(--radius-s);
-      padding: 3px 8px;
-      font-size: var(--font-ui-small);
-      cursor: pointer;
-    `;
-    sel.addEventListener('change', () => {
-      this.currentPerspective = sel.value;
-      this.draw();
+
+    // Perspective button — opens an Obsidian Menu
+    const perspectiveBtn = document.createElement('button');
+    perspectiveBtn.addClass('clickable-icon');
+    perspectiveBtn.style.cssText = `display: flex; align-items: center; gap: 4px; width: auto; padding: 0 8px;`;
+    perspectiveBtn.ariaLabel = 'Switch perspective';
+    const perspIcon = perspectiveBtn.createSpan();
+    setIcon(perspIcon, 'layers');
+    const perspLabel = perspectiveBtn.createSpan();
+    perspLabel.style.fontSize = 'var(--font-ui-small)';
+    perspLabel.textContent = this.currentPerspective;
+    perspectiveBtn.addEventListener('click', (evt) => {
+      const menu = new Menu();
+      const all = [DEFAULT_PERSPECTIVE, ...(this.vaultData?.perspectives ?? [])];
+      for (const p of all) {
+        menu.addItem(item => {
+          item.setTitle(p);
+          item.setChecked(p === this.currentPerspective);
+          item.onClick(() => {
+            this.currentPerspective = p;
+            perspLabel.textContent = p;
+            this.draw();
+          });
+        });
+      }
+      menu.showAtMouseEvent(evt);
     });
-    this.select = sel;
-    controls.appendChild(label);
-    controls.appendChild(sel);
+    this.perspectiveBtn = perspectiveBtn;
+    controls.appendChild(perspectiveBtn);
+
+    // Zoom-to-today button
+    const todayBtn = document.createElement('button');
+    todayBtn.addClass('clickable-icon');
+    todayBtn.ariaLabel = 'Zoom to today';
+    setIcon(todayBtn, 'crosshair');
+    todayBtn.addEventListener('click', () => this.zoomToToday());
+    controls.appendChild(todayBtn);
+
     container.appendChild(controls);
 
     // Geometry — turnAngle = 90° minus the configured skew
@@ -110,6 +183,7 @@ class MementoView extends ItemView {
         this.transform = event.transform;
         this.draw();
       });
+    this.zoomBehavior = zoomBehavior;
     select(canvas)
       .call(zoomBehavior)
       .call(zoomBehavior.transform, this.transform);
@@ -121,31 +195,39 @@ class MementoView extends ItemView {
   private fitTransform(canvasW: number, canvasH: number): ZoomTransform {
     const worldSize = 600, padding = 24;
     const scale = (Math.min(canvasW, canvasH) - padding * 2) / worldSize;
+    this.fitScale = scale;
     const tx = (canvasW - worldSize * scale) / 2;
     const ty = (canvasH - worldSize * scale) / 2;
     return zoomIdentity.translate(tx, ty).scale(scale);
   }
 
-  private syncDropdown(): void {
-    const sel = this.select;
-    if (!sel || !this.vaultData) return;
-    const prev = sel.value || this.currentPerspective;
-    sel.innerHTML = '';
+  private zoomToToday(): void {
+    const canvas = this.canvas;
+    const zb = this.zoomBehavior;
+    if (!canvas || !zb || this.cells.length === 0) return;
 
-    const addOption = (value: string, label: string) => {
-      const opt = document.createElement('option');
-      opt.value = value;
-      opt.textContent = label;
-      sel.appendChild(opt);
-    };
+    const total = this.cells.length;
+    const window = 14;
+    const start = Math.max(0, this.todayIndex - window);
+    const end = Math.min(total - 1, this.todayIndex + window);
 
-    addOption(DEFAULT_PERSPECTIVE, DEFAULT_PERSPECTIVE);
-    for (const p of this.vaultData.perspectives) addOption(p, p);
+    // Center of mass of ±14-day cell window
+    let sumX = 0, sumY = 0, count = 0;
+    for (let i = start; i <= end; i++) {
+      const [cx, cy] = cellCentroid(this.cells[i]);
+      sumX += cx; sumY += cy; count++;
+    }
+    if (count === 0) return;
+    const wx = sumX / count;
+    const wy = sumY / count;
 
-    // Restore previous selection if still valid, else fall back to default
-    const valid = sel.querySelector(`option[value="${CSS.escape(prev)}"]`);
-    sel.value = valid ? prev : DEFAULT_PERSPECTIVE;
-    this.currentPerspective = sel.value;
+    const targetScale = this.fitScale * Math.pow(2, 4.5);
+    const tx = canvas.width / 2 - wx * targetScale;
+    const ty = canvas.height / 2 - wy * targetScale;
+    const target = zoomIdentity.translate(tx, ty).scale(targetScale);
+
+    select(canvas).transition().duration(600)
+      .call(zb.transform, target);
   }
 
   private draw(): void {
@@ -166,15 +248,21 @@ class MementoView extends ItemView {
     const dayColors = this.vaultData?.dayColorsByPerspective.get(this.currentPerspective);
     const hasColors = dayColors?.length === total;
 
+    // Resolve 'default' sentinel to theme text color (adapts to light/dark mode)
+    const themeTextColor = getComputedStyle(canvas).getPropertyValue('--text-normal').trim() || '#222';
+
     // --- Cells ---
     for (let i = 0; i < total; i++) {
       const { points } = this.cells[i];
-      const baseColor = hasColors
+      const rawColor = hasColors
         ? dayColors![i]
         : `hsl(${Math.round((i / total) * 360)}, 45%, 65%)`;
+      const baseColor = rawColor === 'default' ? themeTextColor : rawColor;
 
       ctx.fillStyle = baseColor;
-      ctx.globalAlpha = i > this.todayIndex ? 0.2 : 1.0;
+      // Plain cells (month hsl or gray placeholder) fade to 0.2; event/range cells to 0.5
+      const isPlain = rawColor.startsWith('hsl(') || rawColor === '#6b6b6b';
+      ctx.globalAlpha = i > this.todayIndex ? (isPlain ? 0.2 : 0.5) : 1.0;
 
       ctx.beginPath();
       ctx.moveTo(points[0][0], points[0][1]);
@@ -184,30 +272,27 @@ class MementoView extends ItemView {
     }
 
     ctx.globalAlpha = 1.0;
+
+    // Today cell: theme-inverted fill with a mitered border so it pops in both modes
+    if (this.todayIndex >= 0 && this.todayIndex < total) {
+      const todayCell = this.cells[this.todayIndex];
+      const bgColor = getComputedStyle(canvas).getPropertyValue('--background-primary').trim() || '#fff';
+      ctx.fillStyle = bgColor;
+      ctx.strokeStyle = themeTextColor;
+      ctx.lineWidth = 0.4; // world-space units (gap between cells is ~0.4)
+      ctx.lineJoin = 'miter';
+      ctx.beginPath();
+      ctx.moveTo(todayCell.points[0][0], todayCell.points[0][1]);
+      for (let j = 1; j < todayCell.points.length; j++) ctx.lineTo(todayCell.points[j][0], todayCell.points[j][1]);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
     ctx.restore();
 
-    // --- Labels (screen-space: constant visual size regardless of zoom) ---
-    if (this.vaultData?.labelEntries.length) {
-      const style = getComputedStyle(canvas);
-      const textColor = style.getPropertyValue('--text-normal').trim() || '#222';
-      const bgColor = style.getPropertyValue('--background-primary').trim() || '#fff';
-      const fontFamily = style.getPropertyValue('--font-text').trim() || 'system-ui, sans-serif';
-
-      ctx.font = `13px ${fontFamily}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = bgColor;
-      ctx.fillStyle = textColor;
-
-      for (const entry of this.vaultData.labelEntries) {
-        this.drawScreenLabel(ctx, entry.startLabel, entry.startDay, total, k, x, y);
-        if (entry.endLabel !== null && entry.endDay !== entry.startDay) {
-          this.drawScreenLabel(ctx, entry.endLabel, entry.endDay, total, k, x, y);
-        }
-      }
-    }
+    // --- Labels ---
+    this.drawLabels(ctx, k, x, y, total, w, h, themeTextColor);
 
     // HUD
     const hudColor = getComputedStyle(canvas).getPropertyValue('--text-faint').trim()
@@ -216,30 +301,154 @@ class MementoView extends ItemView {
     ctx.font = '12px monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(`${total.toLocaleString()} cells · zoom ${k.toFixed(2)}×`, 10, h - 8);
+    const displayZoom = (k / this.fitScale).toFixed(2);
+    ctx.fillText(`${total.toLocaleString()} cells · zoom ${displayZoom}×`, 10, h - 8);
   }
 
-  private drawScreenLabel(
+  private drawLabels(
     ctx: CanvasRenderingContext2D,
-    text: string,
-    day: number,
-    totalCells: number,
     k: number, tx: number, ty: number,
+    total: number, canvasW: number, canvasH: number,
+    textColor: string,
   ): void {
-    const idx = Math.max(0, Math.min(totalCells - 1, day));
-    const cell = this.cells[idx];
-    if (!cell) return;
-    const [wx, wy] = cellCentroid(cell);
-    // Convert world → screen
-    const sx = wx * k + tx;
-    const sy = wy * k + ty;
-    ctx.strokeText(text, sx, sy);
-    ctx.fillText(text, sx, sy);
+    if (!this.vaultData?.labelEntries.length) return;
+
+    const style = getComputedStyle(this.canvas!);
+    const bgColor = style.getPropertyValue('--background-primary').trim() || '#fff';
+    const fontFamily = style.getPropertyValue('--font-text').trim() || 'system-ui, sans-serif';
+    const LINE_H = 16;
+    const PAD = 3;     // extra pixels around each box for overlap detection
+    const FONT_SIZE = 13;
+    const zoomLevel = Math.log2(k / this.fitScale);
+
+    ctx.font = `${FONT_SIZE}px ${fontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = bgColor;
+    ctx.fillStyle = textColor;
+
+    type Candidate = {
+      lines: string[];
+      sx: number; sy: number;
+      boxW: number; boxH: number;
+      priority: number;
+      name: string;
+      anchorIdx: number;
+    };
+
+    // Phase 1a: count eligible labels per anchor for stack-height estimation
+    const anchorCounts = new Map<number, number>();
+    for (const entry of this.vaultData.labelEntries) {
+      if (entry.minZoom !== undefined && zoomLevel < entry.minZoom) continue;
+      const inc = (idx: number) => anchorCounts.set(idx, (anchorCounts.get(idx) ?? 0) + 1);
+      inc(Math.max(0, Math.min(total - 1, entry.startDay)));
+      if (entry.endLabel !== null && entry.endDay !== entry.startDay)
+        inc(Math.max(0, Math.min(total - 1, entry.endDay)));
+    }
+
+    // Phase 1b: collect candidates, filter by minZoom and viewport
+    const candidates: Candidate[] = [];
+
+    const addCandidate = (text: string, day: number, minZoom: number | undefined) => {
+      const anchorIdx = Math.max(0, Math.min(total - 1, day));
+      const cell = this.cells[anchorIdx];
+      if (!cell) return;
+      const [wx, wy] = cellCentroid(cell);
+      const sx = wx * k + tx;
+      const sy = wy * k + ty;
+      if (sx < -300 || sx > canvasW + 300 || sy < -300 || sy > canvasH + 300) return;
+
+      const stackH = (anchorCounts.get(anchorIdx) ?? 1) * LINE_H;
+      const lines = wrapToRatio(ctx, text, LINE_H, stackH);
+      const boxW = Math.max(...lines.map(l => ctx.measureText(l).width)) + PAD * 2;
+      const boxH = lines.length * LINE_H + PAD * 2;
+
+      candidates.push({
+        lines, sx, sy, boxW, boxH,
+        priority: minZoom ?? -Infinity,
+        name: text,
+        anchorIdx,
+      });
+    };
+
+    for (const entry of this.vaultData.labelEntries) {
+      if (entry.minZoom !== undefined && zoomLevel < entry.minZoom) continue;
+      addCandidate(entry.startLabel, entry.startDay, entry.minZoom);
+      if (entry.endLabel !== null && entry.endDay !== entry.startDay) {
+        addCandidate(entry.endLabel, entry.endDay, entry.minZoom);
+      }
+    }
+
+    // Phase 2: sort — lower minZoom (more always-visible) wins; alphabetical tiebreak
+    candidates.sort((a, b) =>
+      a.priority !== b.priority ? a.priority - b.priority : a.name.localeCompare(b.name)
+    );
+
+    // Phase 3: propose → box → occlusion test → commit
+    // Each anchor's box is always the centered combined box, so drawn positions match exactly.
+    type LabelInStack = { lines: string[]; sx: number; boxH: number };
+    type AnchorState = {
+      box: { l: number; r: number; t: number; b: number };
+      totalH: number;
+      cellSy: number;
+      labels: LabelInStack[];
+    };
+    const anchors = new Map<number, AnchorState>();
+
+    const overlapsOthers = (box: { l: number; r: number; t: number; b: number }, skipIdx: number) => {
+      for (const [idx, a] of anchors) {
+        if (idx === skipIdx) continue;
+        if (box.r > a.box.l && box.l < a.box.r && box.b > a.box.t && box.t < a.box.b) return true;
+      }
+      return false;
+    };
+
+    for (const c of candidates) {
+      const existing = anchors.get(c.anchorIdx);
+      const newTotalH = (existing?.totalH ?? 0) + c.boxH;
+      const hw = c.boxW / 2;
+
+      // Proposed centered combined box
+      const proposed = {
+        l: Math.min(existing?.box.l ?? (c.sx - hw), c.sx - hw),
+        r: Math.max(existing?.box.r ?? (c.sx + hw), c.sx + hw),
+        t: c.sy - newTotalH / 2,
+        b: c.sy + newTotalH / 2,
+      };
+
+      if (overlapsOthers(proposed, c.anchorIdx)) continue;
+
+      anchors.set(c.anchorIdx, {
+        box: proposed,
+        totalH: newTotalH,
+        cellSy: c.sy,
+        labels: [...(existing?.labels ?? []), { lines: c.lines, sx: c.sx, boxH: c.boxH }],
+      });
+    }
+
+    // Phase 4: draw each committed stack, centered on its cell
+    // Labels are ordered bottom-to-top (first committed at bottom).
+    for (const [, state] of anchors) {
+      let curBottom = state.cellSy + state.totalH / 2;
+      for (const label of state.labels) {
+        // Text baseline of last line sits at curBottom - PAD
+        const drawBottom = curBottom - PAD;
+        for (let i = label.lines.length - 1; i >= 0; i--) {
+          const lineY = drawBottom - (label.lines.length - 1 - i) * LINE_H;
+          ctx.strokeText(label.lines[i], label.sx, lineY);
+          ctx.fillText(label.lines[i], label.sx, lineY);
+        }
+        curBottom -= label.boxH;
+      }
+    }
   }
 
   async onClose(): Promise<void> {
     this.canvas = null;
-    this.select = null;
+    this.perspectiveBtn = null;
+    this.zoomBehavior = null;
   }
 }
 
