@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseVaultData, parseWhen, DEFAULT_PERSPECTIVE } from '../src/data';
+import { entriesAt, parseVaultData, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
 import type { App } from 'obsidian';
 
 const settings = { birthDate: '2000-01-01', entriesDir: 'MM', curveSkew: 1 };
@@ -24,7 +24,20 @@ describe('parseWhen', () => {
     expect(parseWhen(s)?.minutes).toBe(minutes);
   });
 
-  it.each(['', 'tomorrow', '2026-13-45', '2026-10-16T25:00', 42])('rejects %s', (s) => {
+  // Trunky's form: local time of the event's zone, with its UTC offset. Converted to the device's zone.
+  it.each([
+    '2026-10-09T09:00:00+02:00',
+    '2026-10-16T09:00:00-05:00',
+    '2026-10-16T14:00:00Z',
+    '2026-10-16T23:30:00-07:00',   // the next day in Chicago
+  ])('parses %s as the same instant in local time', (s) => {
+    const t = new Date(s);
+    const w = parseWhen(s)!;
+    expect(w.minutes).toBe(t.getHours() * 60 + t.getMinutes());
+    expect(w.date.getTime()).toBe(new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime());
+  });
+
+  it.each(['', 'tomorrow', '2026-13-45', '2026-10-16T25:00', '2026-10-16T24:00:00+02:00', '2026-10-16T09:00+2', 42])('rejects %s', (s) => {
     expect(parseWhen(s)).toBeNull();
   });
 });
@@ -78,5 +91,29 @@ describe('timed entries', () => {
     expect(dentist.endQuarter).toBe(55);
     const trip = data.labelEntries.find(e => e.startLabel === 'Start of Trip')!;
     expect([trip.startDay, trip.startQuarter, trip.endDay, trip.endQuarter]).toEqual([4, 72, 6, 95]);
+  });
+});
+
+describe('entriesAt', () => {
+  const e = (path: string, startDay: number, endDay: number, startQuarter?: number, endQuarter?: number): LabelEntry =>
+    ({ path, title: path, startLabel: path, endLabel: null, startDay, endDay, startQuarter, endQuarter });
+  const entries = [
+    e('life', 0, 1000),
+    e('trip', 5, 7),
+    e('dentist', 6, 6, 52, 55),
+    e('call', 6, 6, 61, 61),
+  ];
+
+  it('lists entries covering a day, shortest first', () => {
+    expect(entriesAt(entries, 6).map(x => x.path)).toEqual(['call', 'dentist', 'trip', 'life']);
+  });
+
+  it('narrows to a 15-minute block', () => {
+    expect(entriesAt(entries, 6, 53).map(x => x.path)).toEqual(['dentist', 'trip', 'life']);
+    expect(entriesAt(entries, 6, 60).map(x => x.path)).toEqual(['trip', 'life']);
+  });
+
+  it('lists each note once', () => {
+    expect(entriesAt([...entries, e('trip', 5, 7)], 6).filter(x => x.path === 'trip')).toHaveLength(1);
   });
 });

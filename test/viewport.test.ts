@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildGeometry } from '../src/geometry';
 import {
-  DEFAULT_ZOOM, cellCentroid, fitScale, fitView, todayView, visibleCells,
+  DEFAULT_ZOOM, cellAt, cellCentroid, fitScale, fitView, todayView, visibleCells,
 } from '../src/viewport';
 
 const cells = buildGeometry(89).days;
@@ -57,5 +57,16 @@ describe('todayView', () => {
   it('handles today at the very start of the curve', () => {
     const v = todayView(cells, 0, 390, 760);
     expect(visibleCells(cells, v, 390, 760)).toContain(0);
+  });
+});
+
+describe('cellAt', () => {
+  const centroids = cells.map(cellCentroid);
+  it.each([0, 1, 11446, 32767])('finds day %i at its centroid', (i) => {
+    const [x, y] = centroids[i];
+    expect(cellAt(cells, centroids, x, y, 5)).toBe(i);
+  });
+  it('finds nothing far outside the curve', () => {
+    expect(cellAt(cells, centroids, -100, -100, 5)).toBe(-1);
   });
 });

@@ -39,12 +39,28 @@ class Events {
   trigger(name: string, ...args: unknown[]) { for (const fn of this.handlers.get(name) ?? []) fn(...args); }
 }
 
+/** Any fake file counts as a TFile. */
+export class TFile {
+  static [Symbol.hasInstance](x: unknown) { return !!x && typeof (x as FakeFile).path === 'string'; }
+}
+
 export class App {
   files: FakeFile[] = [];
-  vault = { getMarkdownFiles: () => this.files };
+  /** Paths passed to openLinkText, for checks. */
+  opened: string[] = [];
+  vault = {
+    getMarkdownFiles: () => this.files,
+    getAbstractFileByPath: (p: string) => this.files.find(f => f.path === p) ?? null,
+  };
   metadataCache = Object.assign(new Events(), {
     getFileCache: (f: FakeFile) => ({ frontmatter: f.frontmatter }),
   });
+  fileManager = {
+    processFrontMatter: async (f: FakeFile, fn: (fm: Record<string, unknown>) => void) => {
+      fn(f.frontmatter);
+      this.metadataCache.trigger('changed', f);
+    },
+  };
   workspace: Workspace;
   constructor(public root: HTMLElement) { this.workspace = new Workspace(this); }
 }
@@ -68,6 +84,7 @@ class Workspace {
   leaves: WorkspaceLeaf[] = [];
   constructor(public app: App) {}
   getLeavesOfType(type: string) { return this.leaves.filter(l => l.view?.getViewType() === type); }
+  async openLinkText(path: string) { this.app.opened.push(path); }
   getLeaf(_kind?: string) { const l = new WorkspaceLeaf(this); this.leaves.push(l); return l; }
   revealLeaf(_leaf: WorkspaceLeaf) {}
   detachLeavesOfType(type: string) {
@@ -154,7 +171,7 @@ export class Menu {
 }
 
 // --- Icons: draw the icon name as text; enough to see layout ---
-const ICON_GLYPHS: Record<string, string> = { layers: '≡', crosshair: '⌖', aperture: '◎' };
+const ICON_GLYPHS: Record<string, string> = { layers: '≡', crosshair: '⌖', aperture: '◎', minus: '−', plus: '+', x: '×' };
 export function setIcon(el: HTMLElement, name: string) {
   el.textContent = ICON_GLYPHS[name] ?? '□';
   el.dataset.icon = name;

@@ -17,4 +17,6 @@ Lifetime calendar drawn as a Hilbert curve; one cell per day. Goal: usable as an
 ## Conventions
 - "Zoom N×" always means relative to the fit-to-viewport scale (`fitScale`), never d3's absolute `k`.
 - At ≥ 64× (`isQuarterView`) days draw as 15-minute blocks; below, as whole days. Hard switch, no blending.
-- Times come from frontmatter: `mm-date`, `mm-start`, `mm-end` accept `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`.
+- Times come from frontmatter: `mm-date`, `mm-start`, `mm-end` accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, or Trunky's form with a UTC offset (`2026-10-09T09:00:00+02:00`, converted to the device's local time).
+- Tapping a label, day or 15-minute block selects an entry (a menu when several cover the spot); the bottom panel steps its `mm-minzoom` by 0.5 via `processFrontMatter` (stepping down to the floor removes the key).
+- Calendar notes are written into the entries folder by the Trunky System "Write calendar notes" (`~/trunky-v0.7/tools/systems/write_calendar_notes.py`); they carry `trunky-id` and `mm-busy-status`.

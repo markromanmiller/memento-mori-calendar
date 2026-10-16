@@ -7,16 +7,28 @@ const GRAY = '#6b6b6b';
 // Sentinel resolved at draw time to --text-normal (adapts to light/dark theme)
 const EVENT_COLOR = 'default';
 
-/** A frontmatter date, optionally with a time ("2026-10-16" or "2026-10-16T13:00"). */
+/**
+ * A frontmatter date, optionally with a time: "2026-10-16", "2026-10-16T13:00", or with a UTC offset as
+ * Trunky writes it, "2026-10-09T09:00:00+02:00" (or "...Z"). A time with an offset is converted to the
+ * device's local time; one without is taken as local time already.
+ */
 type When = { date: Date; minutes: number | null };
 
 export function parseWhen(s: unknown): When | null {
   if (typeof s !== 'string' || !s) return null;
-  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{1,2}):(\d{2})(?::\d{2})?)?$/.exec(s.trim());
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.exec(s.trim());
   if (!m) return null;
-  const date = new Date(m[1] + 'T00:00:00');
+  const [, day, hh, mm, ss, offset] = m;
+  if (offset) {
+    if (Number(hh) > 23 || Number(mm) > 59) return null;
+    const off = offset === 'Z' ? 'Z' : offset.replace(/^([+-]\d{2}):?(\d{2})$/, '$1:$2');
+    const t = new Date(`${day}T${hh.padStart(2, '0')}:${mm}:${ss ?? '00'}${off}`);
+    if (isNaN(t.getTime())) return null;
+    return { date: new Date(t.getFullYear(), t.getMonth(), t.getDate()), minutes: t.getHours() * 60 + t.getMinutes() };
+  }
+  const date = new Date(day + 'T00:00:00');
   if (isNaN(date.getTime())) return null;
-  const minutes = m[2] === undefined ? null : Number(m[2]) * 60 + Number(m[3]);
+  const minutes = hh === undefined ? null : Number(hh) * 60 + Number(mm);
   if (minutes !== null && minutes > 24 * 60) return null;
   return { date, minutes };
 }
@@ -41,6 +53,10 @@ export function getNowQuarter(birthDate: string): number {
 
 /** A range or event that should show a label on the canvas. */
 export type LabelEntry = {
+  /** Vault path of the entry's note. */
+  path: string;
+  /** mm-title, or the note's name. */
+  title: string;
   startLabel: string;       // shown at startDay position
   endLabel: string | null;  // shown at endDay position; null for events (single label)
   startDay: number;
@@ -113,13 +129,14 @@ export function parseVaultData(
     duration: number;
     color: string;
     perspective: string | null;
+    path: string;
     title: string;
     startLabel: string;
     endLabel: string | null;
     minZoom?: number;
     ongoing: boolean;
   };
-  type ParsedEvent = { day: number; quarter: number | null; title: string; minZoom?: number };
+  type ParsedEvent = { path: string; day: number; quarter: number | null; title: string; minZoom?: number };
 
   const ranges: ParsedRange[] = [];
   const events: ParsedEvent[] = [];
@@ -166,13 +183,14 @@ export function parseVaultData(
             duration: isTimed ? endQ - startQ : (e - s + 1) * Q,
             color: color ?? GRAY,
             perspective: (color && perspective) ? perspective : null,
-            title, startLabel, endLabel, minZoom, ongoing,
+            path: file.path, title, startLabel, endLabel, minZoom, ongoing,
           });
         }
       }
     } else if (fm.mm === 'event') {
       const when = parseWhen(fm['mm-date']);
       if (when) events.push({
+        path: file.path,
         day: dayIndex(when.date, birth),
         quarter: when.minutes === null ? null : Math.min(Q - 1, Math.floor(when.minutes / 15)),
         title, minZoom,
@@ -183,6 +201,8 @@ export function parseVaultData(
   // --- Labels: all ranges and events regardless of coloring validity ---
   const labelEntries: LabelEntry[] = [
     ...ranges.map(r => ({
+      path: r.path,
+      title: r.title,
       startLabel: r.startLabel,
       endLabel: r.ongoing ? null : r.endLabel,  // ongoing ranges have no visible end
       startDay: r.startDay,
@@ -192,6 +212,8 @@ export function parseVaultData(
       minZoom: r.minZoom,
     })),
     ...events.map(e => ({
+      path: e.path,
+      title: e.title,
       startLabel: e.title,
       endLabel: null,
       startDay: e.day,
@@ -275,4 +297,24 @@ export function parseVaultData(
   }
 
   return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, labelEntries };
+}
+
+/** Absolute quarters [first, last] an entry covers; date-only ends cover their whole day. */
+function quarterSpan(e: LabelEntry): [number, number] {
+  const Q = QUARTERS_PER_DAY;
+  return [e.startDay * Q + (e.startQuarter ?? 0), e.endDay * Q + (e.endQuarter ?? Q - 1)];
+}
+
+/**
+ * Entries covering a tapped day (quarter undefined) or 15-minute block (quarter of that day), shortest
+ * first, one per note.
+ */
+export function entriesAt(entries: LabelEntry[], day: number, quarter?: number): LabelEntry[] {
+  const Q = QUARTERS_PER_DAY;
+  const [lo, hi] = quarter === undefined ? [day * Q, day * Q + Q - 1] : [day * Q + quarter, day * Q + quarter];
+  const seen = new Set<string>();
+  return entries
+    .filter(e => { const [a, b] = quarterSpan(e); return a <= hi && b >= lo; })
+    .sort((x, y) => (quarterSpan(x)[1] - quarterSpan(x)[0]) - (quarterSpan(y)[1] - quarterSpan(y)[0]))
+    .filter(e => !seen.has(e.path) && !!seen.add(e.path));
 }

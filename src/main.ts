@@ -1,9 +1,9 @@
-import { ItemView, Menu, Plugin, WorkspaceLeaf, setIcon } from 'obsidian';
+import { ItemView, Menu, Plugin, TFile, WorkspaceLeaf, setIcon } from 'obsidian';
 import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zoom';
 import { select } from 'd3-selection';
 import { buildGeometry, CalendarGeometry, Cell, QUARTERS_PER_DAY } from './geometry';
-import { parseVaultData, getTodayIndex, getNowQuarter, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
-import { cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
+import { parseVaultData, getTodayIndex, getNowQuarter, entriesAt, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
+import { cellAt, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
@@ -57,6 +57,10 @@ function wrapToRatio(
 const toTransform = (v: View): ZoomTransform => zoomIdentity.translate(v.x, v.y).scale(v.k);
 
 const GRAY = '#6b6b6b';
+/** mm-minzoom steps by this much; at MINZOOM_FLOOR (the most zoomed-out view) the key is removed. */
+const MINZOOM_STEP = 0.5;
+const MINZOOM_FLOOR = Math.log2(MIN_ZOOM);
+const MINZOOM_CEIL = Math.log2(MAX_ZOOM);
 /** Plain colors (month hues, gray placeholder) fade more in the future than entry colors. */
 const isPlainColor = (c: string) => c.startsWith('hsl(') || c === GRAY;
 
@@ -81,6 +85,11 @@ class MementoView extends ItemView {
   private zoomBehavior: ZoomBehavior<HTMLCanvasElement, unknown> | null = null;
   /** Scale factor at which the full calendar fits the viewport (zoom level 0). */
   private fitScale = 1;
+  /** Screen boxes of the labels drawn last frame, for tapping. */
+  private labelHits: { l: number; r: number; t: number; b: number; entry: LabelEntry }[] = [];
+  /** The entry whose minzoom panel is open. */
+  private selected: { path: string; title: string; minZoom: number | undefined } | null = null;
+  private panel: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoMoriPlugin) {
     super(leaf);
@@ -113,6 +122,12 @@ class MementoView extends ItemView {
         const label = this.perspectiveBtn.querySelector('span:last-child') as HTMLElement | null;
         if (label) label.textContent = DEFAULT_PERSPECTIVE;
       }
+    }
+    if (this.selected) {
+      const e = data.labelEntries.find(x => x.path === this.selected!.path);
+      if (e) this.selected.minZoom = e.minZoom;
+      else this.selected = null;
+      this.renderPanel();
     }
     if (this.canvas) this.draw();
   }
@@ -176,6 +191,19 @@ class MementoView extends ItemView {
     controls.appendChild(todayBtn);
 
     container.appendChild(controls);
+
+    // Minzoom panel (bottom), shown after tapping an entry
+    const panel = document.createElement('div');
+    panel.addClass('memento-mori-panel');
+    panel.style.cssText = `
+      position: absolute; left: 8px; right: 8px; bottom: 28px; z-index: 10; display: none;
+      align-items: center; gap: 4px; padding: 4px 8px; margin: 0 auto; max-width: 420px;
+      background: var(--background-secondary); border: 1px solid var(--background-modifier-border);
+      border-radius: 8px; font-size: var(--font-ui-small);
+    `;
+    this.panel = panel;
+    container.appendChild(panel);
+    canvas.addEventListener('click', (evt) => this.onTap(evt));
 
     // Geometry — turnAngle = 90° minus the configured skew
     this.ensureGeometry();
@@ -384,6 +412,7 @@ class MementoView extends ItemView {
       priority: number;
       name: string;
       anchorIdx: number;
+      entry: LabelEntry;
     };
 
     // Anchors: a day's cell, or in the 15-minute view the block a timed entry starts/ends in.
@@ -410,7 +439,8 @@ class MementoView extends ItemView {
     // Phase 1b: collect candidates, filter by minZoom and viewport
     const candidates: Candidate[] = [];
 
-    const addCandidate = (text: string, day: number, quarter: number | undefined, minZoom: number | undefined) => {
+    const addCandidate = (text: string, day: number, quarter: number | undefined, entry: LabelEntry) => {
+      const minZoom = entry.minZoom;
       const anchor = anchorFor(day, quarter);
       if (!anchor) return;
       const anchorIdx = anchor.key;
@@ -429,13 +459,14 @@ class MementoView extends ItemView {
         priority: minZoom ?? -Infinity,
         name: text,
         anchorIdx,
+        entry,
       });
     };
 
     for (const entry of this.vaultData.labelEntries) {
       if (entry.minZoom !== undefined && zoomLevel < entry.minZoom) continue;
-      addCandidate(entry.startLabel, entry.startDay, entry.startQuarter, entry.minZoom);
-      if (showEnd(entry)) addCandidate(entry.endLabel!, entry.endDay, entry.endQuarter, entry.minZoom);
+      addCandidate(entry.startLabel, entry.startDay, entry.startQuarter, entry);
+      if (showEnd(entry)) addCandidate(entry.endLabel!, entry.endDay, entry.endQuarter, entry);
     }
 
     // Phase 2: sort — lower minZoom (more always-visible) wins; alphabetical tiebreak
@@ -445,7 +476,7 @@ class MementoView extends ItemView {
 
     // Phase 3: propose → box → occlusion test → commit
     // Each anchor's box is always the centered combined box, so drawn positions match exactly.
-    type LabelInStack = { lines: string[]; sx: number; boxH: number };
+    type LabelInStack = { lines: string[]; sx: number; boxW: number; boxH: number; entry: LabelEntry };
     type AnchorState = {
       box: { l: number; r: number; t: number; b: number };
       totalH: number;
@@ -481,15 +512,25 @@ class MementoView extends ItemView {
         box: proposed,
         totalH: newTotalH,
         cellSy: c.sy,
-        labels: [...(existing?.labels ?? []), { lines: c.lines, sx: c.sx, boxH: c.boxH }],
+        labels: [...(existing?.labels ?? []), { lines: c.lines, sx: c.sx, boxW: c.boxW, boxH: c.boxH, entry: c.entry }],
       });
     }
 
     // Phase 4: draw each committed stack, centered on its cell
     // Labels are ordered bottom-to-top (first committed at bottom).
+    this.labelHits = [];
     for (const [, state] of anchors) {
       let curBottom = state.cellSy + state.totalH / 2;
       for (const label of state.labels) {
+        const box = { l: label.sx - label.boxW / 2, r: label.sx + label.boxW / 2, t: curBottom - label.boxH, b: curBottom };
+        this.labelHits.push({ ...box, entry: label.entry });
+        if (label.entry.path === this.selected?.path) {
+          ctx.save();
+          ctx.strokeStyle = getComputedStyle(this.canvas!).getPropertyValue('--interactive-accent').trim() || '#7b6cd9';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(box.l, box.t, box.r - box.l, box.b - box.t);
+          ctx.restore();
+        }
         // Text baseline of last line sits at curBottom - PAD
         const drawBottom = curBottom - PAD;
         for (let i = label.lines.length - 1; i >= 0; i--) {
@@ -502,7 +543,97 @@ class MementoView extends ItemView {
     }
   }
 
+  /** Tap: a label selects its entry; a day (or 15-minute block) lists the entries covering it. */
+  private onTap(evt: MouseEvent): void {
+    const canvas = this.canvas;
+    if (!canvas || !this.vaultData) return;
+    const rect = canvas.getBoundingClientRect();
+    const sx = evt.clientX - rect.left, sy = evt.clientY - rect.top;
+    const hit = this.labelHits.find(b => sx >= b.l && sx <= b.r && sy >= b.t && sy <= b.b);
+    if (hit) { this.select(hit.entry); return; }
+
+    const { k, x, y } = this.transform;
+    const wx = (sx - x) / k, wy = (sy - y) / k;
+    const day = cellAt(this.cells, this.dayCentroids, wx, wy, 600 / 127);
+    let found: LabelEntry[] = [];
+    if (day >= 0) {
+      let quarter: number | undefined;
+      if (isQuarterView(k / this.fitScale) && this.geometry) {
+        const blocks = this.geometry.quarters(day);
+        const q = cellAt(blocks, blocks.map(cellCentroid), wx, wy, 600 / 127);
+        if (q >= 0) quarter = q;
+      }
+      found = entriesAt(this.vaultData.labelEntries, day, quarter);
+      // A free cell or empty block: fall back to anything on that day
+      if (!found.length && quarter !== undefined) found = entriesAt(this.vaultData.labelEntries, day);
+    }
+    if (found.length === 1) this.select(found[0]);
+    else if (found.length > 1) {
+      const menu = new Menu();
+      for (const e of found) menu.addItem(item => { item.setTitle(e.title); item.onClick(() => this.select(e)); });
+      menu.showAtMouseEvent(evt);
+    } else if (this.selected) {
+      this.selected = null;
+      this.renderPanel();
+      this.draw();
+    }
+  }
+
+  private select(entry: LabelEntry): void {
+    this.selected = { path: entry.path, title: entry.title, minZoom: entry.minZoom };
+    this.renderPanel();
+    this.draw();
+  }
+
+  /** The panel: entry title (opens the note), its minzoom with −/+ steps, and close. */
+  private renderPanel(): void {
+    const panel = this.panel;
+    if (!panel) return;
+    panel.empty();
+    const sel = this.selected;
+    panel.style.display = sel ? 'flex' : 'none';
+    if (!sel) return;
+    const title = panel.createSpan({ text: sel.title });
+    title.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;';
+    title.ariaLabel = 'Open note';
+    title.addEventListener('click', () => this.app.workspace.openLinkText(sel.path, '', false));
+    const mz = sel.minZoom;
+    const button = (icon: string, label: string, enabled: boolean, onClick: () => void) => {
+      const b = document.createElement('button');
+      b.addClass('clickable-icon');
+      b.ariaLabel = label;
+      setIcon(b, icon);
+      b.disabled = !enabled;
+      b.style.opacity = enabled ? '' : '0.3';
+      b.addEventListener('click', onClick);
+      panel.appendChild(b);
+    };
+    // Lower minzoom = the label appears when more zoomed out
+    button('minus', 'Show when more zoomed out', mz !== undefined, () =>
+      this.setMinZoom(sel, mz! - MINZOOM_STEP <= MINZOOM_FLOOR ? undefined : mz! - MINZOOM_STEP));
+    const value = panel.createSpan({
+      text: mz === undefined ? 'always' : `${+mz.toFixed(2)} · ${+Math.pow(2, mz).toPrecision(3)}×`,
+    });
+    value.style.cssText = 'min-width: 72px; text-align: center; font-variant-numeric: tabular-nums;';
+    value.ariaLabel = 'mm-minzoom: shown from this zoom';
+    button('plus', 'Show only when more zoomed in', (mz ?? MINZOOM_FLOOR) < MINZOOM_CEIL, () =>
+      this.setMinZoom(sel, Math.round(((mz ?? MINZOOM_FLOOR) + MINZOOM_STEP) / MINZOOM_STEP) * MINZOOM_STEP));
+    button('x', 'Close', true, () => { this.selected = null; this.renderPanel(); this.draw(); });
+  }
+
+  private async setMinZoom(sel: { path: string; minZoom: number | undefined }, value: number | undefined): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(sel.path);
+    if (!(file instanceof TFile)) return;
+    sel.minZoom = value;
+    this.renderPanel();
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      if (value === undefined) delete fm['mm-minzoom'];
+      else fm['mm-minzoom'] = value;
+    });
+  }
+
   async onClose(): Promise<void> {
+    this.panel = null;
     this.canvas = null;
     this.perspectiveBtn = null;
     this.zoomBehavior = null;

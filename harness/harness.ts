@@ -42,6 +42,21 @@ async function main() {
       const v = view();
       v.zoomBehavior.scaleTo(select(v.canvas), v.fitScale * rel);
     },
+    /** Click at canvas coordinates (a tap). */
+    tap: (sx: number, sy: number) => {
+      const r = view().canvas.getBoundingClientRect();
+      view().canvas.dispatchEvent(new MouseEvent('click', { clientX: r.left + sx, clientY: r.top + sy, bubbles: true }));
+    },
+    /** Tap the label of the entry with this title; false when it is not drawn. */
+    tapLabel: (title: string) => {
+      const b = view().labelHits.find((h: { entry: { title: string } }) => h.entry.title === title);
+      if (!b) return false;
+      (window.__mm.tap as (x: number, y: number) => void)((b.l + b.r) / 2, (b.t + b.b) / 2);
+      return true;
+    },
+    /** Press a panel button by its aria-label. */
+    press: (label: string) => (document.querySelector(`.memento-mori-panel [aria-label="${label}"]`) as HTMLElement).click(),
+    frontmatter: (title: string) => app.files.find(f => f.basename === title)?.frontmatter,
     clickToday: () => (document.querySelector('[aria-label="Zoom to today"]') as HTMLElement).click(),
     ready: true,
   };

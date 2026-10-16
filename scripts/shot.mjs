@@ -33,6 +33,14 @@ const scenarios = [
   { name: 'phone-256', vp: PHONE, run: mm => mm.setZoom(256) },
   // Zoom out, then press the Today button and let the 600ms transition finish
   { name: 'phone-today-button', vp: PHONE, run: async mm => { mm.setZoom(4); mm.clickToday(); await new Promise(r => setTimeout(r, 900)); } },
+  // Tap the Dentist label, then lower its minzoom twice (5 → 4)
+  { name: 'phone-tap-label', vp: PHONE, run: async mm => {
+    if (!mm.tapLabel('Dentist')) throw new Error('Dentist label not drawn');
+    mm.press('Show when more zoomed out'); await new Promise(r => setTimeout(r, 50));
+    mm.press('Show when more zoomed out'); await new Promise(r => setTimeout(r, 50));
+    const mz = mm.frontmatter('Dentist')['mm-minzoom'];
+    if (mz !== 4) throw new Error(`expected mm-minzoom 4, got ${mz}`);
+  } },
 ];
 
 const args = process.argv.slice(2);

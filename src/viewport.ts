@@ -85,3 +85,28 @@ export function visibleCells(cells: Cell[], v: View, canvasW: number, canvasH: n
   }
   return out;
 }
+
+export function pointInPolygon(px: number, py: number, pts: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Index of the cell containing world point (wx, wy); a point in a gap goes to the nearest centroid
+ * within maxDist. -1 when there is none. `centroids` are the cells' centroids, precomputed.
+ */
+export function cellAt(cells: Cell[], centroids: [number, number][], wx: number, wy: number, maxDist: number): number {
+  let best = -1, bestD = maxDist * maxDist;
+  for (let i = 0; i < cells.length; i++) {
+    const dx = centroids[i][0] - wx, dy = centroids[i][1] - wy;
+    const d = dx * dx + dy * dy;
+    if (d > 4 * maxDist * maxDist) continue;
+    if (pointInPolygon(wx, wy, cells[i].points)) return i;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}

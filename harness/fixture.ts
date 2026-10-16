@@ -28,5 +28,7 @@ export const FIXTURE_FILES: FakeFile[] = [
   entry('Dentist', { mm: 'range', 'mm-start': '2026-10-16T13:00', 'mm-end': '2026-10-16T14:00', 'mm-minzoom': 5 }),
   entry('Dinner', { mm: 'range', 'mm-start': '2026-10-16T18:30', 'mm-end': '2026-10-16T20:00', 'mm-minzoom': 6 }),
   entry('Workshop', { mm: 'range', 'mm-start': '2026-10-15T08:00', 'mm-end': '2026-10-15T12:00', 'mm-color': '#d9822b', 'mm-color-perspective': 'Life', 'mm-minzoom': 6 }),
+  // As the Trunky calendar System writes them: times with UTC offsets
+  entry('2026-10-16 1600 Lab meeting', { mm: 'range', 'mm-title': 'Lab meeting', 'mm-start': '2026-10-16T16:00:00-05:00', 'mm-end': '2026-10-16T17:00:00-05:00', 'mm-busy-status': 'busy', 'mm-minzoom': 6, 'trunky-id': '00000000-0000-4000-8000-000000000001' }),
   entry('Call with Sam', { mm: 'event', 'mm-date': '2026-10-17T15:15', 'mm-minzoom': 6 }),
 ];
