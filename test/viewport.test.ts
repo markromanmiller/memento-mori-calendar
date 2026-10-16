@@ -4,7 +4,7 @@ import {
   DEFAULT_ZOOM, cellCentroid, fitScale, fitView, todayView, visibleCells,
 } from '../src/viewport';
 
-const cells = buildGeometry(7, 89);
+const cells = buildGeometry(89).days;
 
 // Representative viewports: phone portrait, tablet, desktop pane
 const SIZES: [string, number, number][] = [

@@ -1,9 +1,9 @@
 import { ItemView, Menu, Plugin, WorkspaceLeaf, setIcon } from 'obsidian';
 import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zoom';
 import { select } from 'd3-selection';
-import { buildGeometry, Cell } from './geometry';
-import { parseVaultData, getTodayIndex, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
-import { cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM } from './viewport';
+import { buildGeometry, CalendarGeometry, Cell, QUARTERS_PER_DAY } from './geometry';
+import { parseVaultData, getTodayIndex, getNowQuarter, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
+import { cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
@@ -56,9 +56,22 @@ function wrapToRatio(
 
 const toTransform = (v: View): ZoomTransform => zoomIdentity.translate(v.x, v.y).scale(v.k);
 
+const GRAY = '#6b6b6b';
+/** Plain colors (month hues, gray placeholder) fade more in the future than entry colors. */
+const isPlainColor = (c: string) => c.startsWith('hsl(') || c === GRAY;
+
+function tracePolygon(ctx: CanvasRenderingContext2D, points: [number, number][]): void {
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let j = 1; j < points.length; j++) ctx.lineTo(points[j][0], points[j][1]);
+  ctx.closePath();
+}
+
 class MementoView extends ItemView {
   private plugin: MementoMoriPlugin;
-  private cells: Cell[] = [];
+  private geometry: CalendarGeometry | null = null;
+  private geometrySkew = NaN;
+  private dayCentroids: [number, number][] = [];
   private vaultData: VaultData | null = null;
   private currentPerspective = DEFAULT_PERSPECTIVE;
   private todayIndex = 0;
@@ -77,9 +90,21 @@ class MementoView extends ItemView {
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return 'Memento Mori'; }
 
+  private get cells(): Cell[] { return this.geometry?.days ?? []; }
+
+  /** (Re)build the curve when the skew setting changes. */
+  private ensureGeometry(): void {
+    const skew = this.plugin.settings.curveSkew;
+    if (this.geometry && skew === this.geometrySkew) return;
+    this.geometry = buildGeometry(90 - skew);
+    this.geometrySkew = skew;
+    this.dayCentroids = this.geometry.days.map(cellCentroid);
+  }
+
   setVaultData(data: VaultData, todayIndex: number): void {
     this.vaultData = data;
     this.todayIndex = todayIndex;
+    this.ensureGeometry();
     // If the current perspective was removed, fall back to default
     if (!data.perspectives.includes(this.currentPerspective) &&
         this.currentPerspective !== DEFAULT_PERSPECTIVE) {
@@ -153,9 +178,14 @@ class MementoView extends ItemView {
     container.appendChild(controls);
 
     // Geometry — turnAngle = 90° minus the configured skew
-    this.cells = buildGeometry(7, 90 - this.plugin.settings.curveSkew);
+    this.ensureGeometry();
     // Known before the first frame so the initial view can center on today
     this.todayIndex = getTodayIndex(this.plugin.settings.birthDate);
+    // Keep "today" and the current 15-minute block up to date
+    this.registerInterval(window.setInterval(() => {
+      this.todayIndex = getTodayIndex(this.plugin.settings.birthDate);
+      this.draw();
+    }, 60_000));
 
     // Zoom
     const zoomBehavior = d3zoom<HTMLCanvasElement, unknown>()
@@ -214,54 +244,17 @@ class MementoView extends ItemView {
     ctx.setTransform(k, 0, 0, k, x, y);
 
     const total = this.cells.length;
-    const dayColors = this.vaultData?.dayColorsByPerspective.get(this.currentPerspective);
-    const hasColors = dayColors?.length === total;
-
     // Resolve 'default' sentinel to theme text color (adapts to light/dark mode)
     const themeTextColor = getComputedStyle(canvas).getPropertyValue('--text-normal').trim() || '#222';
+    const quarterView = isQuarterView(k / this.fitScale);
 
-    // --- Cells ---
-    for (let i = 0; i < total; i++) {
-      const { points } = this.cells[i];
-      const rawColor = hasColors
-        ? dayColors![i]
-        : `hsl(${Math.round((i / total) * 360)}, 45%, 65%)`;
-      const baseColor = rawColor === 'default' ? themeTextColor : rawColor;
-
-      ctx.fillStyle = baseColor;
-      // Plain cells (month hsl or gray placeholder) fade to 0.2; event/range cells to 0.5
-      const isPlain = rawColor.startsWith('hsl(') || rawColor === '#6b6b6b';
-      ctx.globalAlpha = i > this.todayIndex ? (isPlain ? 0.2 : 0.5) : 1.0;
-
-      ctx.beginPath();
-      ctx.moveTo(points[0][0], points[0][1]);
-      for (let j = 1; j < points.length; j++) ctx.lineTo(points[j][0], points[j][1]);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    ctx.globalAlpha = 1.0;
-
-    // Today cell: theme-inverted fill with a mitered border so it pops in both modes
-    if (this.todayIndex >= 0 && this.todayIndex < total) {
-      const todayCell = this.cells[this.todayIndex];
-      const bgColor = getComputedStyle(canvas).getPropertyValue('--background-primary').trim() || '#fff';
-      ctx.fillStyle = bgColor;
-      ctx.strokeStyle = themeTextColor;
-      ctx.lineWidth = 0.4; // world-space units (gap between cells is ~0.4)
-      ctx.lineJoin = 'miter';
-      ctx.beginPath();
-      ctx.moveTo(todayCell.points[0][0], todayCell.points[0][1]);
-      for (let j = 1; j < todayCell.points.length; j++) ctx.lineTo(todayCell.points[j][0], todayCell.points[j][1]);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    }
+    if (quarterView) this.drawQuarters(ctx, k, x, y, w, h, themeTextColor);
+    else this.drawDays(ctx, themeTextColor);
 
     ctx.restore();
 
     // --- Labels ---
-    this.drawLabels(ctx, k, x, y, total, w, h, themeTextColor);
+    this.drawLabels(ctx, k, x, y, total, w, h, themeTextColor, quarterView);
 
     // HUD
     const hudColor = getComputedStyle(canvas).getPropertyValue('--text-faint').trim()
@@ -274,11 +267,97 @@ class MementoView extends ItemView {
     ctx.fillText(`${total.toLocaleString()} cells · zoom ${displayZoom}×`, 10, h - 8);
   }
 
+  /** Zoomed out: one filled cell per day. */
+  private drawDays(ctx: CanvasRenderingContext2D, themeTextColor: string): void {
+    const total = this.cells.length;
+    const dayColors = this.vaultData?.dayColorsByPerspective.get(this.currentPerspective);
+    const hasColors = dayColors?.length === total;
+
+    for (let i = 0; i < total; i++) {
+      const rawColor = hasColors
+        ? dayColors![i]
+        : `hsl(${Math.round((i / total) * 360)}, 45%, 65%)`;
+      ctx.fillStyle = rawColor === 'default' ? themeTextColor : rawColor;
+      // Plain cells (month hsl or gray placeholder) fade to 0.2; event/range cells to 0.5
+      ctx.globalAlpha = i > this.todayIndex ? (isPlainColor(rawColor) ? 0.2 : 0.5) : 1.0;
+      tracePolygon(ctx, this.cells[i].points);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1.0;
+
+    // Today cell: theme-inverted fill with a mitered border so it pops in both modes
+    if (this.todayIndex >= 0 && this.todayIndex < total) {
+      const bgColor = getComputedStyle(this.canvas!).getPropertyValue('--background-primary').trim() || '#fff';
+      ctx.fillStyle = bgColor;
+      ctx.strokeStyle = themeTextColor;
+      ctx.lineWidth = 0.4; // world-space units (gap between cells is ~0.4)
+      ctx.lineJoin = 'miter';
+      tracePolygon(ctx, this.cells[this.todayIndex].points);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  /** Zoomed in (≥ 64×): each visible day as 96 fifteen-minute blocks over a faint day cell. */
+  private drawQuarters(
+    ctx: CanvasRenderingContext2D, k: number, tx: number, ty: number,
+    canvasW: number, canvasH: number, themeTextColor: string,
+  ): void {
+    const geom = this.geometry;
+    if (!geom) return;
+    const total = this.cells.length;
+    const base = this.vaultData?.dayBaseColorsByPerspective.get(this.currentPerspective);
+    const blockColors = this.vaultData?.quarterColorsByPerspective.get(this.currentPerspective);
+    const hasBase = base?.length === total;
+    const nowQ = getNowQuarter(this.plugin.settings.birthDate);
+    const resolve = (c: string) => c === 'default' ? themeTextColor : c;
+    // A day's centroid can be up to about one day-length outside the viewport while still visible
+    const margin = (600 / 127) * k;
+
+    for (let d = 0; d < total; d++) {
+      const [cx, cy] = this.dayCentroids[d];
+      const sx = cx * k + tx, sy = cy * k + ty;
+      if (sx < -margin || sx > canvasW + margin || sy < -margin || sy > canvasH + margin) continue;
+      const dayColor = hasBase ? base![d] : `hsl(${Math.round((d / total) * 360)}, 45%, 65%)`;
+
+      // Faint day cell: the free space around the path, available for labels
+      ctx.globalAlpha = 0.15;
+      ctx.fillStyle = resolve(dayColor);
+      tracePolygon(ctx, this.cells[d].points);
+      ctx.fill();
+
+      const blocks = geom.quarters(d);
+      for (let q = 0; q < QUARTERS_PER_DAY; q++) {
+        const abs = d * QUARTERS_PER_DAY + q;
+        const raw = blockColors?.get(abs) ?? dayColor;
+        ctx.globalAlpha = abs > nowQ ? (isPlainColor(raw) ? 0.2 : 0.5) : 1.0;
+        ctx.fillStyle = resolve(raw);
+        tracePolygon(ctx, blocks[q].points);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1.0;
+
+    // Today's outline and the current 15-minute block, at a fixed screen width
+    ctx.strokeStyle = themeTextColor;
+    ctx.lineWidth = 2 / k;
+    ctx.lineJoin = 'miter';
+    if (this.todayIndex >= 0 && this.todayIndex < total) {
+      tracePolygon(ctx, this.cells[this.todayIndex].points);
+      ctx.stroke();
+      const nowBlock = nowQ - this.todayIndex * QUARTERS_PER_DAY;
+      if (nowBlock >= 0 && nowBlock < QUARTERS_PER_DAY) {
+        tracePolygon(ctx, geom.quarters(this.todayIndex)[nowBlock].points);
+        ctx.stroke();
+      }
+    }
+  }
+
   private drawLabels(
     ctx: CanvasRenderingContext2D,
     k: number, tx: number, ty: number,
     total: number, canvasW: number, canvasH: number,
-    textColor: string,
+    textColor: string, quarterView: boolean,
   ): void {
     if (!this.vaultData?.labelEntries.length) return;
 
@@ -307,24 +386,35 @@ class MementoView extends ItemView {
       anchorIdx: number;
     };
 
+    // Anchors: a day's cell, or in the 15-minute view the block a timed entry starts/ends in.
+    // Keys: day index for days, -(absolute quarter + 1) for blocks, so they never collide.
+    const anchorFor = (day: number, quarter: number | undefined): { key: number; pos: [number, number] } | null => {
+      const d = Math.max(0, Math.min(total - 1, day));
+      if (quarterView && quarter !== undefined && this.geometry) {
+        return { key: -(d * QUARTERS_PER_DAY + quarter + 1), pos: cellCentroid(this.geometry.quarters(d)[quarter]) };
+      }
+      return this.cells[d] ? { key: d, pos: this.dayCentroids[d] } : null;
+    };
+    const showEnd = (entry: LabelEntry) => entry.endLabel !== null && (entry.endDay !== entry.startDay ||
+      (quarterView && entry.startQuarter !== undefined && entry.endQuarter !== entry.startQuarter));
+
     // Phase 1a: count eligible labels per anchor for stack-height estimation
     const anchorCounts = new Map<number, number>();
+    const inc = (a: { key: number } | null) => { if (a) anchorCounts.set(a.key, (anchorCounts.get(a.key) ?? 0) + 1); };
     for (const entry of this.vaultData.labelEntries) {
       if (entry.minZoom !== undefined && zoomLevel < entry.minZoom) continue;
-      const inc = (idx: number) => anchorCounts.set(idx, (anchorCounts.get(idx) ?? 0) + 1);
-      inc(Math.max(0, Math.min(total - 1, entry.startDay)));
-      if (entry.endLabel !== null && entry.endDay !== entry.startDay)
-        inc(Math.max(0, Math.min(total - 1, entry.endDay)));
+      inc(anchorFor(entry.startDay, entry.startQuarter));
+      if (showEnd(entry)) inc(anchorFor(entry.endDay, entry.endQuarter));
     }
 
     // Phase 1b: collect candidates, filter by minZoom and viewport
     const candidates: Candidate[] = [];
 
-    const addCandidate = (text: string, day: number, minZoom: number | undefined) => {
-      const anchorIdx = Math.max(0, Math.min(total - 1, day));
-      const cell = this.cells[anchorIdx];
-      if (!cell) return;
-      const [wx, wy] = cellCentroid(cell);
+    const addCandidate = (text: string, day: number, quarter: number | undefined, minZoom: number | undefined) => {
+      const anchor = anchorFor(day, quarter);
+      if (!anchor) return;
+      const anchorIdx = anchor.key;
+      const [wx, wy] = anchor.pos;
       const sx = wx * k + tx;
       const sy = wy * k + ty;
       if (sx < -300 || sx > canvasW + 300 || sy < -300 || sy > canvasH + 300) return;
@@ -344,10 +434,8 @@ class MementoView extends ItemView {
 
     for (const entry of this.vaultData.labelEntries) {
       if (entry.minZoom !== undefined && zoomLevel < entry.minZoom) continue;
-      addCandidate(entry.startLabel, entry.startDay, entry.minZoom);
-      if (entry.endLabel !== null && entry.endDay !== entry.startDay) {
-        addCandidate(entry.endLabel, entry.endDay, entry.minZoom);
-      }
+      addCandidate(entry.startLabel, entry.startDay, entry.startQuarter, entry.minZoom);
+      if (showEnd(entry)) addCandidate(entry.endLabel!, entry.endDay, entry.endQuarter, entry.minZoom);
     }
 
     // Phase 2: sort — lower minZoom (more always-visible) wins; alphabetical tiebreak

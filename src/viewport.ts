@@ -15,7 +15,12 @@ export const DEFAULT_ZOOM = 64;
 export const DEFAULT_WINDOW_RADIUS = 3;
 /** Relative zoom limits for pinch/scroll. */
 export const MIN_ZOOM = 0.5;
-export const MAX_ZOOM = 256;
+export const MAX_ZOOM = 1024;
+/** At this relative zoom and above, days are drawn as 15-minute blocks. */
+export const QUARTER_VIEW_ZOOM = 64;
+
+/** True when the view should show 15-minute blocks (tolerates float error at exactly 64×). */
+export const isQuarterView = (relativeZoom: number) => relativeZoom >= QUARTER_VIEW_ZOOM * (1 - 1e-9);
 
 export type View = { k: number; x: number; y: number };
 

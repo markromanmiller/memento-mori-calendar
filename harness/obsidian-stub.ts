@@ -79,6 +79,7 @@ class Workspace {
 class Component {
   private cleanups: (() => void)[] = [];
   register(fn: () => void) { this.cleanups.push(fn); }
+  registerInterval(id: number) { this.cleanups.push(() => window.clearInterval(id)); return id; }
   registerEvent(_ref: unknown) {}
   unload() { for (const fn of this.cleanups) fn(); }
 }

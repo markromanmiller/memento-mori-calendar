@@ -28,6 +28,9 @@ const scenarios = [
   { name: 'phone-default-dark', vp: PHONE, theme: 'dark' },
   { name: 'desktop-default', vp: DESKTOP },
   { name: 'phone-fit', vp: PHONE, run: mm => mm.setZoom(1) },
+  // Either side of the 64× switch to 15-minute blocks
+  { name: 'phone-16', vp: PHONE, run: mm => mm.setZoom(16) },
+  { name: 'phone-256', vp: PHONE, run: mm => mm.setZoom(256) },
   // Zoom out, then press the Today button and let the 600ms transition finish
   { name: 'phone-today-button', vp: PHONE, run: async mm => { mm.setZoom(4); mm.clickToday(); await new Promise(r => setTimeout(r, 900)); } },
 ];
