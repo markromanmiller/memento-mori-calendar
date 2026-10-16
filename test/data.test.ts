@@ -117,3 +117,13 @@ describe('entriesAt', () => {
     expect(entriesAt([...entries, e('trip', 5, 7)], 6).filter(x => x.path === 'trip')).toHaveLength(1);
   });
 });
+
+describe('cancelled entries', () => {
+  it('skips notes marked mm-cancelled', () => {
+    const data = parseVaultData(fakeApp({
+      Kept: { mm: 'event', 'mm-date': '2000-01-03' },
+      Gone: { mm: 'event', 'mm-date': '2000-01-04', 'mm-cancelled': true },
+    }), settings, TOTAL);
+    expect(data.labelEntries.map(e => e.title)).toEqual(['Kept']);
+  });
+});

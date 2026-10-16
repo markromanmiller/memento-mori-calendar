@@ -144,7 +144,8 @@ export function parseVaultData(
   for (const file of app.vault.getMarkdownFiles()) {
     if (file.parent?.path !== dirPath) continue;
     const fm = app.metadataCache.getFileCache(file)?.frontmatter;
-    if (!fm?.mm) continue;
+    // Cancelled calendar events whose notes were kept (Trunky System "Write calendar notes")
+    if (!fm?.mm || fm['mm-cancelled'] === true) continue;
 
     const title: string = fm['mm-title'] ?? file.basename;
 
