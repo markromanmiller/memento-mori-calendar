@@ -33,6 +33,12 @@ const scenarios = [
   { name: 'phone-256', vp: PHONE, run: mm => mm.setZoom(256) },
   // Zoom out, then press the Today button and let the 600ms transition finish
   { name: 'phone-today-button', vp: PHONE, run: async mm => { mm.setZoom(4); mm.clickToday(); await new Promise(r => setTimeout(r, 900)); } },
+  // Old default scheme, via the perspective menu
+  { name: 'phone-old-default', vp: PHONE, run: async mm => {
+    document.querySelector('[aria-label="Switch perspective"]').dispatchEvent(new MouseEvent('click', { clientX: 300, clientY: 30, bubbles: true }));
+    [...document.querySelectorAll('.menu-item')].find(e => e.textContent.includes('Old default')).click();
+  } },
+  { name: 'phone-128', vp: PHONE, run: mm => mm.setZoom(128) },
   // Tap the Dentist label, then lower its minzoom twice (5 → 4)
   { name: 'phone-tap-label', vp: PHONE, run: async mm => {
     if (!mm.tapLabel('Dentist')) throw new Error('Dentist label not drawn');

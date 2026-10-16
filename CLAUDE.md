@@ -18,5 +18,8 @@ Lifetime calendar drawn as a Hilbert curve; one cell per day. Goal: usable as an
 - "Zoom N×" always means relative to the fit-to-viewport scale (`fitScale`), never d3's absolute `k`.
 - At ≥ 64× (`isQuarterView`) days draw as 15-minute blocks; below, as whole days. Hard switch, no blending.
 - Times come from frontmatter: `mm-date`, `mm-start`, `mm-end` accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, or Trunky's form with a UTC offset (`2026-10-09T09:00:00+02:00`, converted to the device's local time).
+- Perspectives: built-in "Default" (sleep/work/home from the settings `sleepHours`, `workHours`, `workDays`; colors in `ACTIVITY_COLORS`, resolved per theme like the `'default'` sentinel) and "Old default" (month hues), then the user's `mm-color-perspective` names.
+- Hour marks in the 15-minute view: the first block of each hour is shaded; labels show every 3 hours on the 3-hour squares, then every hour, once big enough (`THREE_HOUR_LABEL_PX`, `HOUR_LABEL_PX`).
+- UI near the bottom edge leaves `var(--view-bottom-spacing)` for Obsidian mobile's floating bottom bar (the harness fakes it for phone scenarios).
 - Tapping a label, day or 15-minute block selects an entry (a menu when several cover the spot); the bottom panel steps its `mm-minzoom` by 0.5 via `processFrontMatter` (stepping down to the floor removes the key).
 - Calendar notes are written into the entries folder by the Trunky System "Write calendar notes" (`~/trunky-v0.7/tools/systems/write_calendar_notes.py`); they carry `trunky-id` and `mm-busy-status`.

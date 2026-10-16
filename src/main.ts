@@ -2,7 +2,10 @@ import { ItemView, Menu, Plugin, TFile, WorkspaceLeaf, setIcon } from 'obsidian'
 import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zoom';
 import { select } from 'd3-selection';
 import { buildGeometry, CalendarGeometry, Cell, QUARTERS_PER_DAY } from './geometry';
-import { parseVaultData, getTodayIndex, getNowQuarter, entriesAt, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
+import {
+  parseVaultData, getTodayIndex, getNowQuarter, entriesAt, VaultData, LabelEntry, Activity, ACTIVITIES,
+  DEFAULT_PERSPECTIVE, BUILTIN_PERSPECTIVES,
+} from './data';
 import { cellAt, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
@@ -54,6 +57,12 @@ function wrapToRatio(
   return [text];
 }
 
+/** Approximate side length of a (roughly square) cell. */
+function cellSize(cell: Cell): number {
+  const xs = cell.points.map(p => p[0]), ys = cell.points.map(p => p[1]);
+  return Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+}
+
 const toTransform = (v: View): ZoomTransform => zoomIdentity.translate(v.x, v.y).scale(v.k);
 
 const GRAY = '#6b6b6b';
@@ -61,8 +70,24 @@ const GRAY = '#6b6b6b';
 const MINZOOM_STEP = 0.5;
 const MINZOOM_FLOOR = Math.log2(MIN_ZOOM);
 const MINZOOM_CEIL = Math.log2(MAX_ZOOM);
-/** Plain colors (month hues, gray placeholder) fade more in the future than entry colors. */
-const isPlainColor = (c: string) => c.startsWith('hsl(') || c === GRAY;
+/** Plain colors (month hues, activities, gray placeholder) fade more in the future than entry colors. */
+const isPlainColor = (c: string) => c.startsWith('hsl(') || c === GRAY || (ACTIVITIES as string[]).includes(c);
+
+/** Default perspective: colors for sleep, work and home hours, per theme. */
+const ACTIVITY_COLORS: Record<'light' | 'dark', Record<Activity, string>> = {
+  light: { sleep: 'hsl(230, 25%, 84%)', home: 'hsl(38, 80%, 72%)', work: 'hsl(200, 60%, 62%)' },
+  dark: { sleep: 'hsl(230, 18%, 26%)', home: 'hsl(38, 50%, 44%)', work: 'hsl(200, 50%, 42%)' },
+};
+/** Hour marks in the 15-minute view: the first block of each hour gets this overlay. */
+const HOUR_TICK = { light: 'rgba(0, 0, 0, 0.18)', dark: 'rgba(255, 255, 255, 0.18)' };
+/** Screen sizes (px) at which hour labels appear: every 3 hours on the 3-hour square, every hour on its block. */
+const THREE_HOUR_LABEL_PX = 36;
+const HOUR_LABEL_PX = 20;
+
+function hourText(h: number): string {
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}${h < 12 ? 'a' : 'p'}`;
+}
 
 function tracePolygon(ctx: CanvasRenderingContext2D, points: [number, number][]): void {
   ctx.beginPath();
@@ -91,6 +116,13 @@ class MementoView extends ItemView {
   private selected: { path: string; title: string; minZoom: number | undefined } | null = null;
   private panel: HTMLElement | null = null;
   private bottomProbe: HTMLElement | null = null;
+  private theme: 'light' | 'dark' = 'light';
+
+  /** A stored color, with the sentinels ('default', activities) resolved for the current theme. */
+  private resolveColor(c: string, themeTextColor: string): string {
+    if (c === 'default') return themeTextColor;
+    return (ACTIVITY_COLORS[this.theme] as Record<string, string>)[c] ?? c;
+  }
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoMoriPlugin) {
     super(leaf);
@@ -117,7 +149,7 @@ class MementoView extends ItemView {
     this.ensureGeometry();
     // If the current perspective was removed, fall back to default
     if (!data.perspectives.includes(this.currentPerspective) &&
-        this.currentPerspective !== DEFAULT_PERSPECTIVE) {
+        !BUILTIN_PERSPECTIVES.includes(this.currentPerspective)) {
       this.currentPerspective = DEFAULT_PERSPECTIVE;
       if (this.perspectiveBtn) {
         const label = this.perspectiveBtn.querySelector('span:last-child') as HTMLElement | null;
@@ -166,7 +198,7 @@ class MementoView extends ItemView {
     perspLabel.textContent = this.currentPerspective;
     perspectiveBtn.addEventListener('click', (evt) => {
       const menu = new Menu();
-      const all = [DEFAULT_PERSPECTIVE, ...(this.vaultData?.perspectives ?? [])];
+      const all = [...BUILTIN_PERSPECTIVES, ...(this.vaultData?.perspectives ?? [])];
       for (const p of all) {
         menu.addItem(item => {
           item.setTitle(p);
@@ -281,6 +313,7 @@ class MementoView extends ItemView {
     const total = this.cells.length;
     // Resolve 'default' sentinel to theme text color (adapts to light/dark mode)
     const themeTextColor = getComputedStyle(canvas).getPropertyValue('--text-normal').trim() || '#222';
+    this.theme = document.body.classList.contains('theme-dark') ? 'dark' : 'light';
     const quarterView = isQuarterView(k / this.fitScale);
 
     if (quarterView) this.drawQuarters(ctx, k, x, y, w, h, themeTextColor);
@@ -313,7 +346,7 @@ class MementoView extends ItemView {
       const rawColor = hasColors
         ? dayColors![i]
         : `hsl(${Math.round((i / total) * 360)}, 45%, 65%)`;
-      ctx.fillStyle = rawColor === 'default' ? themeTextColor : rawColor;
+      ctx.fillStyle = this.resolveColor(rawColor, themeTextColor);
       // Plain cells (month hsl or gray placeholder) fade to 0.2; event/range cells to 0.5
       ctx.globalAlpha = i > this.todayIndex ? (isPlainColor(rawColor) ? 0.2 : 0.5) : 1.0;
       tracePolygon(ctx, this.cells[i].points);
@@ -346,7 +379,10 @@ class MementoView extends ItemView {
     const blockColors = this.vaultData?.quarterColorsByPerspective.get(this.currentPerspective);
     const hasBase = base?.length === total;
     const nowQ = getNowQuarter(this.plugin.settings.birthDate);
-    const resolve = (c: string) => c === 'default' ? themeTextColor : c;
+    const resolve = (c: string) => this.resolveColor(c, themeTextColor);
+    const schedule = this.currentPerspective === DEFAULT_PERSPECTIVE ? this.vaultData?.schedule : undefined;
+    const hourTick = HOUR_TICK[this.theme];
+    const visibleDays: number[] = [];
     // A day's centroid can be up to about one day-length outside the viewport while still visible
     const margin = (600 / 127) * k;
 
@@ -362,17 +398,24 @@ class MementoView extends ItemView {
       tracePolygon(ctx, this.cells[d].points);
       ctx.fill();
 
+      visibleDays.push(d);
       const blocks = geom.quarters(d);
       for (let q = 0; q < QUARTERS_PER_DAY; q++) {
         const abs = d * QUARTERS_PER_DAY + q;
-        const raw = blockColors?.get(abs) ?? dayColor;
+        const raw = blockColors?.get(abs) ?? (schedule ? schedule(d, q) : dayColor);
         ctx.globalAlpha = abs > nowQ ? (isPlainColor(raw) ? 0.2 : 0.5) : 1.0;
         ctx.fillStyle = resolve(raw);
         tracePolygon(ctx, blocks[q].points);
         ctx.fill();
+        // Hour mark: shade the first block of each hour
+        if (q % 4 === 0) {
+          ctx.fillStyle = hourTick;
+          ctx.fill();
+        }
       }
     }
     ctx.globalAlpha = 1.0;
+    this.drawHourLabels(ctx, k, visibleDays, themeTextColor);
 
     // Today's outline and the current 15-minute block, at a fixed screen width
     ctx.strokeStyle = themeTextColor;
@@ -387,6 +430,47 @@ class MementoView extends ItemView {
         ctx.stroke();
       }
     }
+  }
+
+  /**
+   * Hour labels in the 15-minute view: "12a 3a 6a …" on each 3-hour square once those are big enough,
+   * then every hour on its first block. Drawn in world space; the caller's transform is active.
+   */
+  private drawHourLabels(ctx: CanvasRenderingContext2D, k: number, days: number[], color: string): void {
+    const geom = this.geometry;
+    if (!geom || !days.length) return;
+    const blockPx = cellSize(geom.quarters(days[0])[0]) * k;
+    const threeHourPx = blockPx * 6;    // a 3-hour square is 2 × 45-minute squares of 3 cells
+    const every = blockPx >= HOUR_LABEL_PX ? 1 : threeHourPx >= THREE_HOUR_LABEL_PX ? 3 : 0;
+    if (!every) return;
+    const style = getComputedStyle(this.canvas!);
+    const fontFamily = style.getPropertyValue('--font-text').trim() || 'system-ui, sans-serif';
+    const px = every === 1 ? Math.min(14, blockPx * 0.5) : Math.min(14, threeHourPx * 0.3);
+    ctx.save();
+    ctx.font = `600 ${px / k}px ${fontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3 / k;
+    ctx.strokeStyle = style.getPropertyValue('--background-primary').trim() || '#fff';
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.75;
+    for (const d of days) {
+      const blocks = geom.quarters(d);
+      for (let h = 0; h < 24; h += every) {
+        let pos: [number, number];
+        if (every === 1) pos = cellCentroid(blocks[h * 4]);
+        else {
+          // Center of the 3-hour square: mean of its 12 blocks' centroids
+          let sx = 0, sy = 0;
+          for (let q = h * 4; q < h * 4 + 12; q++) { const [x, y] = cellCentroid(blocks[q]); sx += x; sy += y; }
+          pos = [sx / 12, sy / 12];
+        }
+        ctx.strokeText(hourText(h), pos[0], pos[1]);
+        ctx.fillText(hourText(h), pos[0], pos[1]);
+      }
+    }
+    ctx.restore();
   }
 
   private drawLabels(

@@ -1,7 +1,7 @@
 {
   "id": "memento-mori",
   "name": "Memento Mori",
-  "version": "0.2.0-beta.2",
+  "version": "0.2.0-beta.3",
   "minAppVersion": "1.0.0",
   "description": "Lifetime visualization as a Hilbert curve.",
   "author": "mark",

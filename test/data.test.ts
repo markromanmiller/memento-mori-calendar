@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { entriesAt, parseVaultData, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
+import { buildSchedule, daysMask, entriesAt, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
 import type { App } from 'obsidian';
 
-const settings = { birthDate: '2000-01-01', entriesDir: 'MM', curveSkew: 1 };
+const settings = { birthDate: '2000-01-01', entriesDir: 'MM', curveSkew: 1, sleepHours: '23:00-07:00', workHours: '09:00-17:00', workDays: 'Mon-Fri' };
 const TOTAL = 32768;
 const Q = 96;
 
@@ -125,5 +125,36 @@ describe('cancelled entries', () => {
       Gone: { mm: 'event', 'mm-date': '2000-01-04', 'mm-cancelled': true },
     }), settings, TOTAL);
     expect(data.labelEntries.map(e => e.title)).toEqual(['Kept']);
+  });
+});
+
+describe('schedule', () => {
+  it('reads hour windows, wrapping past midnight', () => {
+    const m = hoursMask('23:00-07:00')!;
+    expect([m[0], m[27], m[28], m[91], m[92], m[95]]).toEqual([true, true, false, false, true, true]);
+    expect(hoursMask('09:00-17:00')!.filter(Boolean)).toHaveLength(32);
+    expect(hoursMask('9-5')).toBeNull();
+  });
+
+  it('reads day lists and ranges', () => {
+    expect(daysMask('Mon-Fri')).toEqual([false, true, true, true, true, true, false]);
+    expect(daysMask('Sat-Mon')).toEqual([true, true, false, false, false, false, true]);
+    expect(daysMask('mon, Wed,FRIDAY')).toEqual([false, true, false, true, false, true, false]);
+    expect(daysMask('Funday')).toBeNull();
+  });
+
+  // 2000-01-01 was a Saturday; day 2 is Monday 2000-01-03
+  const s = buildSchedule(settings);
+  it.each([
+    [2, 4 * 6, 'sleep'], [2, 4 * 8, 'home'], [2, 4 * 10, 'work'], [2, 4 * 17, 'home'], [2, 4 * 23, 'sleep'],
+    [0, 4 * 10, 'home'], [1, 4 * 10, 'home'],
+  ])('day %i block %i is %s', (day, q, want) => {
+    expect(s(day, q)).toBe(want);
+  });
+
+  it('keeps the month-hue scheme as Old default', () => {
+    const data = parseVaultData(fakeApp({}), settings, TOTAL);
+    expect(data.dayColorsByPerspective.get(OLD_DEFAULT_PERSPECTIVE)![0]).toMatch(/^hsl\(/);
+    expect(data.dayColorsByPerspective.get(DEFAULT_PERSPECTIVE)!.slice(0, 3)).toEqual(['home', 'home', 'work']);
   });
 });

@@ -13,12 +13,21 @@ export interface MementoSettings {
    * Default: 1 (turnAngle = 89°).
    */
   curveSkew: number;
+  /** Daily sleep window, "HH:MM-HH:MM" (may wrap past midnight). */
+  sleepHours: string;
+  /** Work window on work days, "HH:MM-HH:MM". */
+  workHours: string;
+  /** Work days, e.g. "Mon-Fri" or "Mon,Tue,Thu". */
+  workDays: string;
 }
 
 export const DEFAULT_SETTINGS: MementoSettings = {
   entriesDir: 'Memento Mori',
   birthDate: '2000-01-01',
   curveSkew: 1,
+  sleepHours: '23:00-07:00',
+  workHours: '09:00-17:00',
+  workDays: 'Mon-Fri',
 };
 
 export class MementoSettingTab extends PluginSettingTab {
@@ -65,6 +74,23 @@ export class MementoSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    const textSetting = (name: string, desc: string, key: 'sleepHours' | 'workHours' | 'workDays', placeholder: string) =>
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addText(text =>
+          text
+            .setPlaceholder(placeholder)
+            .setValue(this.plugin.settings[key])
+            .onChange(async (value) => {
+              this.plugin.settings[key] = value.trim();
+              await this.plugin.saveSettings();
+            })
+        );
+    textSetting('Sleep hours', 'Shown in the Default colors. HH:MM-HH:MM; may run past midnight.', 'sleepHours', '23:00-07:00');
+    textSetting('Work hours', 'On work days. HH:MM-HH:MM.', 'workHours', '09:00-17:00');
+    textSetting('Work days', 'Mon-Fri, or a list like Mon,Tue,Thu.', 'workDays', 'Mon-Fri');
 
     new Setting(containerEl)
       .setName('Entries folder')

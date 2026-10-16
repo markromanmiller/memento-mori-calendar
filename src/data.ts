@@ -3,6 +3,10 @@ import { MementoSettings } from './settings';
 import { QUARTERS_PER_DAY } from './geometry';
 
 export const DEFAULT_PERSPECTIVE = 'Default';
+/** The month-hue scheme that was the default until 0.2.0-beta.3. */
+export const OLD_DEFAULT_PERSPECTIVE = 'Old default';
+/** Built-in perspectives, listed before the user's. */
+export const BUILTIN_PERSPECTIVES = [DEFAULT_PERSPECTIVE, OLD_DEFAULT_PERSPECTIVE];
 const GRAY = '#6b6b6b';
 // Sentinel resolved at draw time to --text-normal (adapts to light/dark theme)
 const EVENT_COLOR = 'default';
@@ -69,7 +73,7 @@ export type LabelEntry = {
 };
 
 export type VaultData = {
-  /** User-defined perspective names, sorted. Does not include DEFAULT_PERSPECTIVE. */
+  /** User-defined perspective names, sorted. Does not include the BUILTIN_PERSPECTIVES. */
   perspectives: string[];
   /** Whole-day colors for the zoomed-out view, by perspective (includes DEFAULT_PERSPECTIVE). */
   dayColorsByPerspective: Map<string, string[]>;
@@ -79,7 +83,65 @@ export type VaultData = {
   quarterColorsByPerspective: Map<string, Map<number, string>>;
   /** All ranges + events, for label rendering. */
   labelEntries: LabelEntry[];
+  /** Sleep / work / home for a day's 15-minute block, from the settings. */
+  schedule: Schedule;
 };
+
+// ---------------------------------------------------------------------------
+// Daily schedule: sleep, work and home hours
+// ---------------------------------------------------------------------------
+
+export type Activity = 'sleep' | 'work' | 'home';
+export type Schedule = (day: number, quarter: number) => Activity;
+/** Color sentinels resolved at draw time (theme-aware), like 'default'. */
+export const ACTIVITIES: Activity[] = ['sleep', 'work', 'home'];
+
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/** "HH:MM-HH:MM" as a 96-slot mask of 15-minute blocks (wraps past midnight); null if malformed. */
+export function hoursMask(s: string): boolean[] | null {
+  const m = /^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(s ?? '');
+  if (!m) return null;
+  const a = (Number(m[1]) * 60 + Number(m[2])) / 15, b = (Number(m[3]) * 60 + Number(m[4])) / 15;
+  if (a > 96 || b > 96) return null;
+  const mask = new Array<boolean>(96).fill(false);
+  for (let q = 0; q < 96; q++) mask[q] = a <= b ? q >= a && q < b : q >= a || q < b;
+  return mask;
+}
+
+/** "Mon-Fri", "Mon,Wed,Fri" or "Sat-Sun,Wed" as a 7-slot mask indexed by Date.getDay(); null if malformed. */
+export function daysMask(s: string): boolean[] | null {
+  const mask = new Array<boolean>(7).fill(false);
+  for (const part of (s ?? '').toLowerCase().split(',').map(p => p.trim()).filter(Boolean)) {
+    const [from, to] = part.split('-').map(p => WEEKDAYS.indexOf(p.trim().slice(0, 3)));
+    if (from < 0 || (to !== undefined && to < 0)) return null;
+    for (let d = from; ; d = (d + 1) % 7) { mask[d] = true; if (to === undefined || d === to) break; }
+  }
+  return mask;
+}
+
+export function buildSchedule(settings: MementoSettings): Schedule {
+  const sleep = hoursMask(settings.sleepHours) ?? hoursMask('23:00-07:00')!;
+  const work = hoursMask(settings.workHours) ?? hoursMask('09:00-17:00')!;
+  const workDays = daysMask(settings.workDays) ?? daysMask('Mon-Fri')!;
+  const birth = new Date(settings.birthDate + 'T00:00:00');
+  const valid = !isNaN(birth.getTime());
+  return (day, q) => {
+    if (sleep[q]) return 'sleep';
+    if (!valid) return 'home';
+    const weekday = new Date(birth.getFullYear(), birth.getMonth(), birth.getDate() + day).getDay();
+    return workDays[weekday] && work[q] ? 'work' : 'home';
+  };
+}
+
+/** Work days show as work, other days as home, in the zoomed-out Default view. */
+function buildActivityDayColors(totalCells: number, schedule: Schedule, settings: MementoSettings): string[] {
+  const work = hoursMask(settings.workHours) ?? hoursMask('09:00-17:00')!;
+  const firstWorkQ = Math.max(0, work.indexOf(true));
+  const colors = new Array<string>(totalCells);
+  for (let i = 0; i < totalCells; i++) colors[i] = schedule(i, firstWorkQ) === 'work' ? 'work' : 'home';
+  return colors;
+}
 
 // ---------------------------------------------------------------------------
 // Month-based default colors (hue cycles red→blue over Jan→Dec)
@@ -114,6 +176,7 @@ export function parseVaultData(
       dayBaseColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, gray]]),
       quarterColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Map()]]),
       labelEntries: [],
+      schedule: buildSchedule(settings),
     };
   }
 
@@ -227,7 +290,7 @@ export function parseVaultData(
 
   // --- Perspectives ---
   const perspectiveSet = new Set<string>();
-  for (const r of ranges) if (r.perspective) perspectiveSet.add(r.perspective);
+  for (const r of ranges) if (r.perspective && !BUILTIN_PERSPECTIVES.includes(r.perspective)) perspectiveSet.add(r.perspective);
   const perspectives = Array.from(perspectiveSet).sort();
 
   // --- Color maps ---
@@ -237,9 +300,9 @@ export function parseVaultData(
   const inDays = (d: number) => d >= 0 && d < totalCells;
   const inQuarters = (q: number) => q >= 0 && q < totalQuarters;
 
-  // Default month perspective
-  {
-    const base = buildDefaultColors(totalCells, birth);
+  // Built-in perspectives: a base (activity or month hue) with entries marked in the theme's text color
+  const schedule = buildSchedule(settings);
+  const builtin = (name: string, base: string[]) => {
     const quarters = new Map<number, string>();
     // Date-only range boundaries and events mark the whole day; skip end day for ongoing ranges
     for (const r of ranges) {
@@ -262,10 +325,12 @@ export function parseVaultData(
       if (inQuarters(q)) quarters.set(q, EVENT_COLOR);
       if (inDays(e.day)) days[e.day] = EVENT_COLOR;
     }
-    dayColorsByPerspective.set(DEFAULT_PERSPECTIVE, days);
-    dayBaseColorsByPerspective.set(DEFAULT_PERSPECTIVE, base);
-    quarterColorsByPerspective.set(DEFAULT_PERSPECTIVE, quarters);
-  }
+    dayColorsByPerspective.set(name, days);
+    dayBaseColorsByPerspective.set(name, base);
+    quarterColorsByPerspective.set(name, quarters);
+  };
+  builtin(DEFAULT_PERSPECTIVE, buildActivityDayColors(totalCells, schedule, settings));
+  builtin(OLD_DEFAULT_PERSPECTIVE, buildDefaultColors(totalCells, birth));
 
   // Sort ranges by duration descending so shorter (more specific) overwrites
   const sorted = [...ranges].sort((a, b) => b.duration - a.duration);
@@ -297,7 +362,7 @@ export function parseVaultData(
     quarterColorsByPerspective.set(perspective, quarters);
   }
 
-  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, labelEntries };
+  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, labelEntries, schedule };
 }
 
 /** Absolute quarters [first, last] an entry covers; date-only ends cover their whole day. */
