@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildGeometry } from '../src/geometry';
 import {
-  DEFAULT_ZOOM, cellAt, cellCentroid, fitScale, fitView, todayView, visibleCells,
+  DEFAULT_ZOOM, blockPoint, blockUV, cellAt, cellCentroid, fitScale, fitView, todayView, visibleCells,
 } from '../src/viewport';
 
 const cells = buildGeometry(89).days;
@@ -68,5 +68,25 @@ describe('cellAt', () => {
   });
   it('finds nothing far outside the curve', () => {
     expect(cellAt(cells, centroids, -100, -100, 5)).toBe(-1);
+  });
+});
+
+describe('block frame', () => {
+  const geom = buildGeometry(85);   // strongly skewed, so the frame is rotated
+  it.each([[0.5, 0.5], [0, 0], [1.5, -1], [-2.25, 3.1]])('round-trips (%f, %f)', (u, v) => {
+    for (const [d, q] of [[0, 0], [11446, 57], [32767, 95]]) {
+      const block = geom.quarters(d)[q];
+      const [x, y] = blockPoint(block, u, v);
+      const [u2, v2] = blockUV(block, x, y);
+      expect(u2).toBeCloseTo(u, 9);
+      expect(v2).toBeCloseTo(v, 9);
+    }
+  });
+  it('puts (0.5, 0.5) at the block center', () => {
+    const block = geom.quarters(11446)[10];
+    const [x, y] = blockPoint(block, 0.5, 0.5);
+    const [cx, cy] = cellCentroid(block);
+    expect(x).toBeCloseTo(cx, 9);
+    expect(y).toBeCloseTo(cy, 9);
   });
 });

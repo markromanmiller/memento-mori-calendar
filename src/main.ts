@@ -1,12 +1,13 @@
-import { ItemView, Menu, Plugin, TFile, WorkspaceLeaf, setIcon } from 'obsidian';
+import { App, ItemView, Menu, Modal, Plugin, TFile, WorkspaceLeaf, setIcon } from 'obsidian';
 import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zoom';
 import { select } from 'd3-selection';
 import { buildGeometry, CalendarGeometry, Cell, QUARTERS_PER_DAY } from './geometry';
 import {
-  parseVaultData, getTodayIndex, getNowQuarter, entriesAt, VaultData, LabelEntry, Activity, ACTIVITIES,
+  parseVaultData, getTodayIndex, getNowQuarter, entriesAt, formatAnchor, VaultData, LabelEntry, Annotation,
+  Activity, ACTIVITIES,
   DEFAULT_PERSPECTIVE, BUILTIN_PERSPECTIVES,
 } from './data';
-import { cellAt, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
+import { blockPoint, blockUV, cellAt, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
@@ -63,6 +64,51 @@ function cellSize(cell: Cell): number {
   return Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
 }
 
+/** Hold this long on an annotation to pick it up; moving further than MOVE_TOLERANCE first cancels. */
+const HOLD_MS = 450;
+const MOVE_TOLERANCE = 10;
+/** While dragging, the annotation floats this far (px) above the finger so it stays visible. */
+const DRAG_LIFT = 64;
+
+type Selection = { path: string; title: string; minZoom?: number; maxZoom?: number; annotation: boolean };
+type Box = { l: number; r: number; t: number; b: number };
+const inBox = (b: Box, x: number, y: number) => x >= b.l && x <= b.r && y >= b.t && y <= b.b;
+const fmtZoom = (z: number | undefined, none: string) =>
+  z === undefined ? none : `${+z.toFixed(2)} · ${+Math.pow(2, z).toPrecision(3)}×`;
+
+/** Asks for an annotation's text. */
+class AnnotationModal extends Modal {
+  constructor(app: App, private onSubmit: (text: string) => void) { super(app); }
+  onOpen(): void {
+    const { contentEl } = this;
+    const heading = document.createElement('h3');
+    heading.textContent = 'New annotation';
+    contentEl.appendChild(heading);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Text';
+    input.style.width = '100%';
+    contentEl.appendChild(input);
+    const row = document.createElement('div');
+    row.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;';
+    const ok = document.createElement('button');
+    ok.textContent = 'Add';
+    ok.addClass('mod-cta');
+    row.appendChild(ok);
+    contentEl.appendChild(row);
+    const submit = () => {
+      const text = input.value.trim();
+      if (!text) return;
+      this.close();
+      this.onSubmit(text);
+    };
+    ok.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    window.setTimeout(() => input.focus(), 0);
+  }
+  onClose(): void { this.contentEl.empty(); }
+}
+
 const toTransform = (v: View): ZoomTransform => zoomIdentity.translate(v.x, v.y).scale(v.k);
 
 const GRAY = '#6b6b6b';
@@ -111,9 +157,14 @@ class MementoView extends ItemView {
   /** Scale factor at which the full calendar fits the viewport (zoom level 0). */
   private fitScale = 1;
   /** Screen boxes of the labels drawn last frame, for tapping. */
-  private labelHits: { l: number; r: number; t: number; b: number; entry: LabelEntry }[] = [];
+  private labelHits: (Box & { entry: LabelEntry })[] = [];
+  private annotationHits: (Box & { ann: Annotation })[] = [];
+  /** An annotation being dragged, and the finger's canvas position. */
+  private drag: { ann: Annotation; sx: number; sy: number } | null = null;
+  /** Clicks right after a drop are the end of the drag, not taps. */
+  private suppressClickUntil = 0;
   /** The entry whose minzoom panel is open. */
-  private selected: { path: string; title: string; minZoom: number | undefined } | null = null;
+  private selected: Selection | null = null;
   private panel: HTMLElement | null = null;
   private bottomProbe: HTMLElement | null = null;
   private theme: 'light' | 'dark' = 'light';
@@ -157,8 +208,10 @@ class MementoView extends ItemView {
       }
     }
     if (this.selected) {
-      const e = data.labelEntries.find(x => x.path === this.selected!.path);
-      if (e) this.selected.minZoom = e.minZoom;
+      const e = this.selected.annotation
+        ? data.annotations.find(x => x.path === this.selected!.path)
+        : data.labelEntries.find(x => x.path === this.selected!.path);
+      if (e) this.selected = this.selectionOf(e);
       else this.selected = null;
       this.renderPanel();
     }
@@ -261,7 +314,9 @@ class MementoView extends ItemView {
         this.draw();
       });
     this.zoomBehavior = zoomBehavior;
-    select(canvas).call(zoomBehavior);
+    // Double-tap (or double-click) adds an annotation instead of zooming; d3 routes touch double-taps here too
+    select(canvas).call(zoomBehavior).on('dblclick.zoom', (event: MouseEvent | TouchEvent) => this.onDoubleTap(event));
+    this.setUpDragging(container, canvas);
 
     // Resize. The container can be 0×0 when the view opens (e.g. a background
     // tab), so the initial view waits for the first real size.
@@ -323,6 +378,7 @@ class MementoView extends ItemView {
 
     // --- Labels ---
     this.drawLabels(ctx, k, x, y, total, w, h, themeTextColor, quarterView);
+    this.drawAnnotations(ctx, w, h);
 
     // HUD
     const hudColor = getComputedStyle(canvas).getPropertyValue('--text-faint').trim()
@@ -635,13 +691,15 @@ class MementoView extends ItemView {
     }
   }
 
-  /** Tap: a label selects its entry; a day (or 15-minute block) lists the entries covering it. */
+  /** Tap: a label or annotation selects it; a day (or 15-minute block) lists the entries covering it. */
   private onTap(evt: MouseEvent): void {
     const canvas = this.canvas;
-    if (!canvas || !this.vaultData) return;
+    if (!canvas || !this.vaultData || performance.now() < this.suppressClickUntil) return;
     const rect = canvas.getBoundingClientRect();
     const sx = evt.clientX - rect.left, sy = evt.clientY - rect.top;
-    const hit = this.labelHits.find(b => sx >= b.l && sx <= b.r && sy >= b.t && sy <= b.b);
+    const ann = this.annotationHits.find(b => inBox(b, sx, sy));
+    if (ann) { this.select(ann.ann); return; }
+    const hit = this.labelHits.find(b => inBox(b, sx, sy));
     if (hit) { this.select(hit.entry); return; }
 
     const { k, x, y } = this.transform;
@@ -671,25 +729,222 @@ class MementoView extends ItemView {
     }
   }
 
-  private select(entry: LabelEntry): void {
-    this.selected = { path: entry.path, title: entry.title, minZoom: entry.minZoom };
+  private selectionOf(item: LabelEntry | Annotation): Selection {
+    const annotation = 'u' in item;
+    return { path: item.path, title: item.title, minZoom: item.minZoom,
+      maxZoom: annotation ? (item as Annotation).maxZoom : undefined, annotation };
+  }
+
+  private select(item: LabelEntry | Annotation): void {
+    this.selected = this.selectionOf(item);
     this.renderPanel();
     this.draw();
   }
 
-  /** The panel: entry title (opens the note), its minzoom with −/+ steps, and close. */
+  private get zoomLevel(): number { return Math.log2(this.transform.k / this.fitScale); }
+
+  /** The anchor (block and position in its frame) nearest a canvas point; null off the curve. */
+  private anchorAt(sx: number, sy: number): { day: number; quarter: number; u: number; v: number } | null {
+    if (!this.geometry) return null;
+    const { k, x, y } = this.transform;
+    const wx = (sx - x) / k, wy = (sy - y) / k;
+    const day = cellAt(this.cells, this.dayCentroids, wx, wy, 600 / 127);
+    if (day < 0) return null;
+    const blocks = this.geometry.quarters(day);
+    const quarter = cellAt(blocks, blocks.map(cellCentroid), wx, wy, 1e9);
+    const [u, v] = blockUV(blocks[quarter], wx, wy);
+    return { day, quarter, u, v };
+  }
+
+  /** Double-tap: ask for text and add an annotation note at that spot, shown from the current zoom. */
+  private onDoubleTap(event: MouseEvent | TouchEvent): void {
+    const canvas = this.canvas;
+    if (!canvas || performance.now() < this.suppressClickUntil) return;
+    const p = 'changedTouches' in event ? event.changedTouches[0] : event;
+    const rect = canvas.getBoundingClientRect();
+    const anchor = this.anchorAt(p.clientX - rect.left, p.clientY - rect.top);
+    if (!anchor) return;
+    const minZoom = Math.floor(this.zoomLevel / MINZOOM_STEP) * MINZOOM_STEP;
+    new AnnotationModal(this.app, (text) => this.plugin.createAnnotation(text, anchor, minZoom)).open();
+  }
+
+  /**
+   * Hold an annotation to pick it up, then drag it; the map doesn't pan meanwhile. Listeners run in the capture
+   * phase so moves can be kept from d3's pan handlers (touch: on the canvas; mouse: on the window).
+   */
+  private setUpDragging(container: HTMLElement, canvas: HTMLCanvasElement): void {
+    let press: { timer: number; x0: number; y0: number } | null = null;
+    const pointOf = (e: MouseEvent | TouchEvent): [number, number] => {
+      const t = 'touches' in e ? (e.touches[0] ?? e.changedTouches[0]) : e;
+      const r = canvas.getBoundingClientRect();
+      return [t.clientX - r.left, t.clientY - r.top];
+    };
+    const cancel = () => { if (press) window.clearTimeout(press.timer); press = null; };
+    const down = (e: MouseEvent | TouchEvent) => {
+      cancel();
+      if ('touches' in e && e.touches.length > 1) return;
+      if (e.target !== canvas) return;
+      const [sx, sy] = pointOf(e);
+      const hit = this.annotationHits.find(b => inBox(b, sx, sy));
+      if (!hit) return;
+      press = {
+        x0: sx, y0: sy,
+        timer: window.setTimeout(() => {
+          press = null;
+          this.drag = { ann: hit.ann, sx, sy };
+          navigator.vibrate?.(15);
+          this.draw();
+        }, HOLD_MS),
+      };
+    };
+    const move = (e: MouseEvent | TouchEvent) => {
+      if (this.drag) {
+        // d3 also listens in the capture phase on the window (mouse), so stop listeners on the same target too
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        [this.drag.sx, this.drag.sy] = pointOf(e);
+        this.draw();
+      } else if (press) {
+        const [sx, sy] = pointOf(e);
+        if (Math.hypot(sx - press.x0, sy - press.y0) > MOVE_TOLERANCE) cancel();
+      }
+    };
+    const up = () => {
+      cancel();
+      if (!this.drag) return;
+      const d = this.drag;
+      this.drag = null;
+      this.suppressClickUntil = performance.now() + 500;
+      void this.dropAnnotation(d.ann, d.sx, d.sy - DRAG_LIFT);
+    };
+    const listen = (target: EventTarget, type: string, fn: (e: never) => void, passive = true) => {
+      target.addEventListener(type, fn as EventListener, { capture: true, passive });
+      this.register(() => target.removeEventListener(type, fn as EventListener, { capture: true }));
+    };
+    listen(container, 'touchstart', down);
+    listen(container, 'mousedown', down);
+    listen(container, 'touchmove', move, false);
+    listen(window, 'mousemove', move, false);
+    listen(container, 'touchend', up);
+    listen(container, 'touchcancel', up);
+    listen(window, 'mouseup', up);
+    // A long press shouldn't open the browser's context menu or select text
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.style.setProperty('-webkit-touch-callout', 'none');
+    canvas.style.userSelect = 'none';
+  }
+
+  private async dropAnnotation(ann: Annotation, sx: number, sy: number): Promise<void> {
+    const anchor = this.anchorAt(sx, sy);
+    const file = this.app.vault.getAbstractFileByPath(ann.path);
+    if (!anchor || !(file instanceof TFile)) { this.draw(); return; }
+    Object.assign(ann, anchor);   // show it in place now; the note catches up
+    this.draw();
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      fm['mm-anchor'] = formatAnchor(this.plugin.settings.birthDate, anchor.day, anchor.quarter, anchor.u, anchor.v);
+    });
+  }
+
+  /**
+   * Annotations: their text centered exactly on the anchor, no stacking. While one is dragged it floats above
+   * the finger, with a ring under the finger and a crosshair where it will land.
+   */
+  private drawAnnotations(ctx: CanvasRenderingContext2D, canvasW: number, canvasH: number): void {
+    this.annotationHits = [];
+    const anns = this.vaultData?.annotations;
+    const geom = this.geometry;
+    if (!anns?.length || !geom) return;
+    const style = getComputedStyle(this.canvas!);
+    const accent = style.getPropertyValue('--interactive-accent').trim() || '#7b6cd9';
+    const bg = style.getPropertyValue('--background-primary').trim() || '#fff';
+    const fontFamily = style.getPropertyValue('--font-text').trim() || 'system-ui, sans-serif';
+    const { k, x, y } = this.transform;
+    const level = this.zoomLevel;
+    ctx.save();
+    ctx.font = `italic 600 13px ${fontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const label = (text: string, sx: number, sy: number, lifted: boolean): Box => {
+      const w = ctx.measureText(text).width + 8, h = 18;
+      const box = { l: sx - w / 2, r: sx + w / 2, t: sy - h / 2, b: sy + h / 2 };
+      if (lifted) {
+        ctx.fillStyle = bg;
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(box.l, box.t, w, h, 4);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = bg;
+        ctx.strokeText(text, sx, sy);
+      }
+      ctx.fillStyle = accent;
+      ctx.fillText(text, sx, sy);
+      return box;
+    };
+    for (const a of anns) {
+      const dragging = this.drag?.ann === a;
+      if (!dragging && ((a.minZoom !== undefined && level < a.minZoom) || (a.maxZoom !== undefined && level > a.maxZoom))) continue;
+      if (a.day < 0 || a.day >= this.cells.length) continue;
+      const [wx, wy] = blockPoint(geom.quarters(a.day)[a.quarter], a.u, a.v);
+      const sx = wx * k + x, sy = wy * k + y;
+      if (dragging) { ctx.globalAlpha = 0.3; label(a.title, sx, sy, false); ctx.globalAlpha = 1; continue; }
+      if (sx < -200 || sx > canvasW + 200 || sy < -50 || sy > canvasH + 50) continue;
+      const box = label(a.title, sx, sy, false);
+      this.annotationHits.push({ ...box, ann: a });
+      if (a.path === this.selected?.path) {
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(box.l, box.t, box.r - box.l, box.b - box.t);
+      }
+    }
+    if (this.drag) {
+      const { sx, sy, ann } = this.drag;
+      const ly = sy - DRAG_LIFT;
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 36, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 36);
+      ctx.lineTo(sx, ly);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(sx - 6, ly); ctx.lineTo(sx + 6, ly);
+      ctx.moveTo(sx, ly - 6); ctx.lineTo(sx, ly + 6);
+      ctx.stroke();
+      label(ann.title, sx, ly, true);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * The panel: title (opens the note), minzoom ↑/↓, close. Annotations also get a max zoom (hidden when zoomed
+   * in further) and a delete button, on a second row.
+   */
   private renderPanel(): void {
     const panel = this.panel;
     if (!panel) return;
     panel.empty();
     const sel = this.selected;
     panel.style.display = sel ? 'flex' : 'none';
+    panel.style.flexWrap = 'wrap';
     if (!sel) return;
     const title = panel.createSpan({ text: sel.title });
-    title.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;';
+    title.style.cssText = `flex: 1 1 ${sel.annotation ? '60%' : '0'}; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; cursor: pointer;`;
     title.ariaLabel = 'Open note';
     title.addEventListener('click', () => this.app.workspace.openLinkText(sel.path, '', false));
-    const mz = sel.minZoom;
     const button = (icon: string, label: string, enabled: boolean, onClick: () => void) => {
       const b = document.createElement('button');
       b.addClass('clickable-icon');
@@ -700,31 +955,61 @@ class MementoView extends ItemView {
       b.addEventListener('click', onClick);
       panel.appendChild(b);
     };
+    const text = (t: string, label: string, minWidth = 60) => {
+      const span = panel.createSpan({ text: t });
+      span.style.cssText = `min-width: ${minWidth}px; text-align: center; font-variant-numeric: tabular-nums;`;
+      span.ariaLabel = label;
+    };
+    const close = () => button('x', 'Close', true, () => { this.selected = null; this.renderPanel(); this.draw(); });
+    if (sel.annotation) {
+      button('trash-2', 'Delete annotation', true, () => this.deleteAnnotation(sel));
+      close();
+      const br = document.createElement('div');
+      br.style.flexBasis = '100%';
+      panel.appendChild(br);
+    }
+    const mz = sel.minZoom, xz = sel.maxZoom;
+    if (sel.annotation) text('from', 'Shown from', 0);
     // Lower minzoom = the label appears when more zoomed out
     button('arrow-up', 'Raise priority (show when more zoomed out)', mz !== undefined, () =>
-      this.setMinZoom(sel, mz! - MINZOOM_STEP <= MINZOOM_FLOOR ? undefined : mz! - MINZOOM_STEP));
-    const value = panel.createSpan({
-      text: mz === undefined ? 'always' : `${+mz.toFixed(2)} · ${+Math.pow(2, mz).toPrecision(3)}×`,
-    });
-    value.style.cssText = 'min-width: 72px; text-align: center; font-variant-numeric: tabular-nums;';
-    value.ariaLabel = 'mm-minzoom: shown from this zoom';
-    button('arrow-down', 'Lower priority (show only when more zoomed in)', (mz ?? MINZOOM_FLOOR) < MINZOOM_CEIL, () =>
-      this.setMinZoom(sel, Math.round(((mz ?? MINZOOM_FLOOR) + MINZOOM_STEP) / MINZOOM_STEP) * MINZOOM_STEP));
-    button('x', 'Close', true, () => { this.selected = null; this.renderPanel(); this.draw(); });
+      this.setZoomKey(sel, 'mm-minzoom', mz! - MINZOOM_STEP <= MINZOOM_FLOOR ? undefined : mz! - MINZOOM_STEP));
+    text(fmtZoom(mz, 'always'), 'mm-minzoom: shown from this zoom');
+    button('arrow-down', 'Lower priority (show only when more zoomed in)',
+      (mz ?? MINZOOM_FLOOR) < Math.min(MINZOOM_CEIL, xz ?? Infinity), () =>
+        this.setZoomKey(sel, 'mm-minzoom', Math.round(((mz ?? MINZOOM_FLOOR) + MINZOOM_STEP) / MINZOOM_STEP) * MINZOOM_STEP));
+    if (!sel.annotation) { close(); return; }
+    text('until', 'Shown until', 0);
+    // Higher maxzoom = still shown when more zoomed in; none = never hidden
+    button('arrow-up', 'Show when more zoomed in', xz !== undefined, () =>
+      this.setZoomKey(sel, 'mm-maxzoom', xz! + MINZOOM_STEP >= MINZOOM_CEIL ? undefined : xz! + MINZOOM_STEP));
+    text(fmtZoom(xz, 'any'), 'mm-maxzoom: hidden when zoomed in further');
+    button('arrow-down', 'Hide when zoomed in this far',
+      xz === undefined || xz - MINZOOM_STEP >= (mz ?? MINZOOM_FLOOR), () =>
+        this.setZoomKey(sel, 'mm-maxzoom', xz === undefined
+          ? Math.max(mz ?? MINZOOM_FLOOR, Math.ceil(this.zoomLevel / MINZOOM_STEP) * MINZOOM_STEP)
+          : xz - MINZOOM_STEP));
   }
 
-  private async setMinZoom(sel: { path: string; minZoom: number | undefined }, value: number | undefined): Promise<void> {
+  private async setZoomKey(sel: Selection, key: 'mm-minzoom' | 'mm-maxzoom', value: number | undefined): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(sel.path);
     if (!(file instanceof TFile)) return;
-    sel.minZoom = value;
+    if (key === 'mm-minzoom') sel.minZoom = value; else sel.maxZoom = value;
     this.renderPanel();
     await this.app.fileManager.processFrontMatter(file, (fm) => {
-      if (value === undefined) delete fm['mm-minzoom'];
-      else fm['mm-minzoom'] = value;
+      if (value === undefined) delete fm[key];
+      else fm[key] = value;
     });
+  }
+
+  private async deleteAnnotation(sel: Selection): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(sel.path);
+    this.selected = null;
+    this.renderPanel();
+    if (file instanceof TFile) await this.app.fileManager.trashFile(file);
   }
 
   async onClose(): Promise<void> {
+    this.drag = null;
     this.panel = null;
     this.canvas = null;
     this.perspectiveBtn = null;
@@ -761,6 +1046,9 @@ export default class MementoMoriPlugin extends Plugin {
     this.registerEvent(
       this.app.metadataCache.on('resolved', () => this.pushData())
     );
+    // Deleting or renaming notes doesn't fire 'changed'
+    this.registerEvent(this.app.vault.on('delete', () => this.pushData()));
+    this.registerEvent(this.app.vault.on('rename', () => this.pushData()));
   }
 
   async onunload(): Promise<void> {
@@ -775,6 +1063,21 @@ export default class MementoMoriPlugin extends Plugin {
     const data = parseVaultData(this.app, this.settings, totalCells);
     const todayIndex = getTodayIndex(this.settings.birthDate);
     view.setVaultData(data, todayIndex);
+  }
+
+  /** Write a new annotation note into the entries folder. */
+  async createAnnotation(
+    text: string, anchor: { day: number; quarter: number; u: number; v: number }, minZoom: number,
+  ): Promise<void> {
+    const dir = this.settings.entriesDir.replace(/\/$/, '');
+    const anchorText = formatAnchor(this.settings.birthDate, anchor.day, anchor.quarter, anchor.u, anchor.v);
+    const stamp = anchorText.slice(0, 16).replace('T', ' ').replace(':', '');
+    const safe = text.replace(/[\\/:*?"<>|#^[\]]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Annotation';
+    let path = `${dir}/Annotation ${stamp} ${safe}.md`;
+    for (let n = 2; this.app.vault.getAbstractFileByPath(path); n++) path = `${dir}/Annotation ${stamp} ${safe} (${n}).md`;
+    const body = ['---', 'mm: annotation', `mm-title: ${JSON.stringify(text)}`, `mm-anchor: "${anchorText}"`,
+      `mm-minzoom: ${minZoom}`, '---', ''].join('\n');
+    await this.app.vault.create(path, body);
   }
 
   async loadSettings(): Promise<void> {

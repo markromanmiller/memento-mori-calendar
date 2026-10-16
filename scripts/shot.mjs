@@ -39,6 +39,39 @@ const scenarios = [
     [...document.querySelectorAll('.menu-item')].find(e => e.textContent.includes('Old default')).click();
   } },
   { name: 'phone-128', vp: PHONE, run: mm => mm.setZoom(128) },
+  // Double-tap empty space to add an annotation, then hold and drag the fixture one; screenshot mid-drag
+  { name: 'phone-annotations', vp: PHONE, run: async mm => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    mm.doubleTap(195, 470); await wait(50);
+    mm.submitAnnotation('note to self'); await wait(50);
+    const made = mm.files().find(f => f.frontmatter.mm === 'annotation' && f.frontmatter['mm-title'] === 'note to self');
+    if (!made) throw new Error('annotation not created');
+    if (!mm.annotationAt('note to self')) throw new Error('new annotation not drawn');
+    const before = mm.frontmatter('Annotation 2026-10-16 1500 3p goes here')['mm-anchor'];
+    const [x, y] = mm.annotationAt('3p goes here');
+    mm.mouse('mousedown', x, y); await wait(600);
+    mm.mouse('mousemove', x - 40, y + 60); await wait(20);
+    mm.mouse('mousemove', x - 80, y + 120); await wait(20);
+    window.__dropAt = [x - 80, y + 120];
+    window.__before = before;
+  } },
+  { name: 'phone-annotations-dropped', vp: PHONE, run: async mm => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const [x, y] = mm.annotationAt('3p goes here');
+    const before = mm.frontmatter('Annotation 2026-10-16 1500 3p goes here')['mm-anchor'];
+    const view0 = mm.state();
+    mm.mouse('mousedown', x, y); await wait(600);
+    mm.mouse('mousemove', x - 80, y + 120); await wait(20);
+    if (mm.state().x !== view0.x || mm.state().y !== view0.y) throw new Error('map panned during drag');
+    mm.mouse('mouseup', x - 80, y + 120); await wait(50);
+    const after = mm.frontmatter('Annotation 2026-10-16 1500 3p goes here')['mm-anchor'];
+    if (after === before) throw new Error('anchor did not change');
+    const [nx, ny] = mm.annotationAt('3p goes here');
+    // Dropped where the floating label was: 64px above the finger
+    if (Math.abs(nx - (x - 80)) > 3 || Math.abs(ny - (y + 120 - 64)) > 3) throw new Error(`landed at ${nx},${ny}`);
+    await wait(550); mm.tap(nx, ny); await wait(20);
+    if (!document.querySelector('.memento-mori-panel [aria-label="Delete annotation"]')) throw new Error('annotation panel not shown: ' + JSON.stringify({ sel: mm.view().selected, hits: mm.view().annotationHits.map(h => [h.l, h.t, h.r, h.b]), at: [nx, ny], panel: document.querySelector('.memento-mori-panel')?.innerHTML }));
+  } },
   // Tap the Dentist label, then lower its minzoom twice (5 → 4)
   { name: 'phone-tap-label', vp: PHONE, run: async mm => {
     if (!mm.tapLabel('Dentist')) throw new Error('Dentist label not drawn');

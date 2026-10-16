@@ -16,6 +16,8 @@
     --font-text: -apple-system, "Segoe UI", system-ui, sans-serif;
     --font-ui-small: 13px;
     --interactive-hover: #f0f0f0;
+    --interactive-accent: #7b6cd9;
+    --background-secondary: #f6f6f6;
   }
   body.theme-dark {
     --background-primary: #1e1e1e;
@@ -43,6 +45,9 @@
   .mobile-navbar { position: fixed; left: 0; right: 0; bottom: 0; height: 60px; z-index: 50;
     background: var(--background-primary); border-top: 1px solid var(--text-faint);
     display: flex; align-items: center; justify-content: space-around; color: var(--text-faint); }
+  .modal { position: fixed; left: 16px; right: 16px; top: 30%; z-index: 100; padding: 12px; border-radius: 8px;
+    background: var(--background-primary); border: 1px solid var(--text-faint); box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .modal input { font-size: 15px; padding: 6px; box-sizing: border-box; }
   .menu-item { padding: 4px 10px; white-space: pre; cursor: pointer; }
 </style>
 </head>

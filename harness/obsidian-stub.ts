@@ -48,10 +48,25 @@ export class App {
   files: FakeFile[] = [];
   /** Paths passed to openLinkText, for checks. */
   opened: string[] = [];
-  vault = {
+  vault = Object.assign(new Events(), {
     getMarkdownFiles: () => this.files,
     getAbstractFileByPath: (p: string) => this.files.find(f => f.path === p) ?? null,
-  };
+    /** Creates a fake file; frontmatter lines are "key: value" with JSON or plain values. */
+    create: async (path: string, content: string) => {
+      const fm: Record<string, unknown> = {};
+      const m = /^---\n([\s\S]*?)\n---/.exec(content);
+      for (const line of m ? m[1].split('\n') : []) {
+        const [k, ...rest] = line.split(':');
+        const raw = rest.join(':').trim();
+        try { fm[k.trim()] = JSON.parse(raw); } catch { fm[k.trim()] = raw; }
+      }
+      const slash = path.lastIndexOf('/');
+      const f: FakeFile = { path, basename: path.slice(slash + 1).replace(/\.md$/, ''), parent: { path: path.slice(0, slash) }, frontmatter: fm };
+      this.files.push(f);
+      this.metadataCache.trigger('changed', f);
+      return f;
+    },
+  });
   metadataCache = Object.assign(new Events(), {
     getFileCache: (f: FakeFile) => ({ frontmatter: f.frontmatter }),
   });
@@ -59,6 +74,10 @@ export class App {
     processFrontMatter: async (f: FakeFile, fn: (fm: Record<string, unknown>) => void) => {
       fn(f.frontmatter);
       this.metadataCache.trigger('changed', f);
+    },
+    trashFile: async (f: FakeFile) => {
+      this.files = this.files.filter(x => x !== f);
+      this.vault.trigger('delete', f);
     },
   };
   workspace: Workspace;
@@ -144,6 +163,20 @@ export class Setting {
   addText() { return this; }
 }
 
+// --- Modal: a plain overlay ---
+export class Modal {
+  containerEl = document.createElement('div');
+  contentEl: HTMLElement;
+  constructor(public app: App) {
+    this.containerEl.className = 'modal';
+    this.contentEl = this.containerEl.createDiv({ cls: 'modal-content' });
+  }
+  open() { document.body.appendChild(this.containerEl); this.onOpen(); }
+  close() { this.onClose(); this.containerEl.remove(); }
+  onOpen() {}
+  onClose() {}
+}
+
 // --- Menu: renders a simple list so screenshots show it ---
 export class Menu {
   private items: { title: string; checked: boolean; onClick: () => void }[] = [];
@@ -171,7 +204,7 @@ export class Menu {
 }
 
 // --- Icons: draw the icon name as text; enough to see layout ---
-const ICON_GLYPHS: Record<string, string> = { layers: '≡', crosshair: '⌖', aperture: '◎', 'arrow-up': '↑', 'arrow-down': '↓', x: '×' };
+const ICON_GLYPHS: Record<string, string> = { layers: '≡', crosshair: '⌖', aperture: '◎', 'arrow-up': '↑', 'arrow-down': '↓', 'trash-2': '🗑', x: '×' };
 export function setIcon(el: HTMLElement, name: string) {
   el.textContent = ICON_GLYPHS[name] ?? '□';
   el.dataset.icon = name;

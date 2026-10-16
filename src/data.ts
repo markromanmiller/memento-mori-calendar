@@ -72,6 +72,47 @@ export type LabelEntry = {
   minZoom?: number;
 };
 
+/**
+ * A free-floating note on the canvas (mm: annotation), anchored to a point near a 15-minute block:
+ * mm-anchor: "2026-10-16T14:15 0.31,0.72" = the block starting then, and (u, v) in its frame (see blockPoint).
+ */
+export type Annotation = {
+  path: string;
+  title: string;
+  day: number;
+  quarter: number;
+  u: number;
+  v: number;
+  minZoom?: number;
+  maxZoom?: number;
+};
+
+export function parseAnchor(s: unknown, birthDate: string): { day: number; quarter: number; u: number; v: number } | null {
+  if (typeof s !== 'string') return null;
+  const m = /^\s*(\S+)\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$/.exec(s);
+  if (!m) return null;
+  const when = parseWhen(m[1]);
+  const birth = new Date(birthDate + 'T00:00:00');
+  const u = Number(m[2]), v = Number(m[3]);
+  if (!when || when.minutes === null || isNaN(birth.getTime()) || !isFinite(u) || !isFinite(v)) return null;
+  return { day: dayIndex(when.date, birth), quarter: Math.min(QUARTERS_PER_DAY - 1, Math.floor(when.minutes / 15)), u, v };
+}
+
+export function formatAnchor(birthDate: string, day: number, quarter: number, u: number, v: number): string {
+  const b = new Date(birthDate + 'T00:00:00');
+  const d = new Date(b.getFullYear(), b.getMonth(), b.getDate() + day);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const minutes = quarter * 15;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)} ` +
+    `${u.toFixed(3)},${v.toFixed(3)}`;
+}
+
+/** A number from frontmatter (number or numeric string), else undefined. */
+function fmNumber(raw: unknown): number | undefined {
+  const n = typeof raw === 'number' ? raw : parseFloat(raw as string);
+  return isNaN(n) ? undefined : n;
+}
+
 export type VaultData = {
   /** User-defined perspective names, sorted. Does not include the BUILTIN_PERSPECTIVES. */
   perspectives: string[];
@@ -85,6 +126,7 @@ export type VaultData = {
   labelEntries: LabelEntry[];
   /** Sleep / work / home for a day's 15-minute block, from the settings. */
   schedule: Schedule;
+  annotations: Annotation[];
 };
 
 // ---------------------------------------------------------------------------
@@ -177,6 +219,7 @@ export function parseVaultData(
       quarterColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Map()]]),
       labelEntries: [],
       schedule: buildSchedule(settings),
+      annotations: [],
     };
   }
 
@@ -201,6 +244,7 @@ export function parseVaultData(
   };
   type ParsedEvent = { path: string; day: number; quarter: number | null; title: string; minZoom?: number };
 
+  const annotations: Annotation[] = [];
   const ranges: ParsedRange[] = [];
   const events: ParsedEvent[] = [];
 
@@ -218,7 +262,10 @@ export function parseVaultData(
       return isNaN(n) ? undefined : n;
     })();
 
-    if (fm.mm === 'range') {
+    if (fm.mm === 'annotation') {
+      const anchor = parseAnchor(fm['mm-anchor'], settings.birthDate);
+      if (anchor) annotations.push({ path: file.path, title, ...anchor, minZoom, maxZoom: fmNumber(fm['mm-maxzoom']) });
+    } else if (fm.mm === 'range') {
       const start = parseWhen(fm['mm-start']);
       const ongoing: boolean = fm['mm-ongoing'] === true;
       const now = new Date();
@@ -362,7 +409,7 @@ export function parseVaultData(
     quarterColorsByPerspective.set(perspective, quarters);
   }
 
-  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, labelEntries, schedule };
+  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, labelEntries, schedule, annotations };
 }
 
 /** Absolute quarters [first, last] an entry covers; date-only ends cover their whole day. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSchedule, daysMask, entriesAt, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
+import { buildSchedule, daysMask, entriesAt, formatAnchor, parseAnchor, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
 import type { App } from 'obsidian';
 
 const settings = { birthDate: '2000-01-01', entriesDir: 'MM', curveSkew: 1, sleepHours: '23:00-07:00', workHours: '09:00-17:00', workDays: 'Mon-Fri' };
@@ -156,5 +156,28 @@ describe('schedule', () => {
     const data = parseVaultData(fakeApp({}), settings, TOTAL);
     expect(data.dayColorsByPerspective.get(OLD_DEFAULT_PERSPECTIVE)![0]).toMatch(/^hsl\(/);
     expect(data.dayColorsByPerspective.get(DEFAULT_PERSPECTIVE)!.slice(0, 3)).toEqual(['home', 'home', 'work']);
+  });
+});
+
+describe('annotations', () => {
+  it('round-trips an anchor through its text form', () => {
+    const text = formatAnchor('2000-01-01', 2, 57, 0.3125, -1.5);
+    expect(text).toBe('2000-01-03T14:15 0.313,-1.500');
+    expect(parseAnchor(text, '2000-01-01')).toEqual({ day: 2, quarter: 57, u: 0.313, v: -1.5 });
+  });
+
+  it.each([undefined, '', '2000-01-03 0.1,0.2', '2000-01-03T14:15', 'soon 0,0'])('rejects anchor %s', (a) => {
+    expect(parseAnchor(a, '2000-01-01')).toBeNull();
+  });
+
+  it('reads annotation notes with min and max zoom, separately from labels', () => {
+    const data = parseVaultData(fakeApp({
+      Note: { mm: 'annotation', 'mm-title': '10a over here', 'mm-anchor': '2000-01-03T10:00 0.5,0.5', 'mm-minzoom': 6, 'mm-maxzoom': '8.5' },
+      Broken: { mm: 'annotation', 'mm-anchor': 'nowhere' },
+    }), settings, TOTAL);
+    expect(data.annotations).toEqual([
+      { path: undefined, title: '10a over here', day: 2, quarter: 40, u: 0.5, v: 0.5, minZoom: 6, maxZoom: 8.5 },
+    ]);
+    expect(data.labelEntries).toHaveLength(0);
   });
 });

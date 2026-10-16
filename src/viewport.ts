@@ -110,3 +110,21 @@ export function cellAt(cells: Cell[], centroids: [number, number][], wx: number,
   }
   return best;
 }
+
+/**
+ * A point in a block's own frame: (0,0) is its first corner, (1,0) the second, (0,1) the fourth. Values outside
+ * 0–1 reach the free space around the block. The frame turns with the curve skew, so anchors stay put.
+ */
+export function blockPoint(cell: Cell, u: number, v: number): [number, number] {
+  const [p0, p1, , p3] = cell.points;
+  return [p0[0] + u * (p1[0] - p0[0]) + v * (p3[0] - p0[0]), p0[1] + u * (p1[1] - p0[1]) + v * (p3[1] - p0[1])];
+}
+
+/** Inverse of blockPoint. */
+export function blockUV(cell: Cell, x: number, y: number): [number, number] {
+  const [p0, p1, , p3] = cell.points;
+  const ax = p1[0] - p0[0], ay = p1[1] - p0[1], bx = p3[0] - p0[0], by = p3[1] - p0[1];
+  const det = ax * by - ay * bx;
+  const dx = x - p0[0], dy = y - p0[1];
+  return [(dx * by - dy * bx) / det, (ax * dy - ay * dx) / det];
+}

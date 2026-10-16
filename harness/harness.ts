@@ -60,6 +60,28 @@ async function main() {
     },
     /** Press a panel button by its aria-label. */
     press: (label: string) => (document.querySelector(`.memento-mori-panel [aria-label="${label}"]`) as HTMLElement).click(),
+    /** Double-click at canvas coordinates (d3 routes touch double-taps to the same handler). */
+    doubleTap: (sx: number, sy: number) => {
+      const r = view().canvas.getBoundingClientRect();
+      view().canvas.dispatchEvent(new MouseEvent('dblclick', { clientX: r.left + sx, clientY: r.top + sy, bubbles: true }));
+    },
+    /** Fill in and submit the open annotation dialog. */
+    submitAnnotation: (text: string) => {
+      (document.querySelector('.modal input') as HTMLInputElement).value = text;
+      (document.querySelector('.modal .mod-cta') as HTMLElement).click();
+    },
+    /** Canvas-coordinate center of a drawn annotation, or null. */
+    annotationAt: (title: string) => {
+      const b = view().annotationHits.find((h: { ann: { title: string } }) => h.ann.title === title);
+      return b ? [(b.l + b.r) / 2, (b.t + b.b) / 2] : null;
+    },
+    /** Mouse events at canvas coordinates: down on the canvas, move/up on the window (as d3 listens). */
+    mouse: (type: string, sx: number, sy: number) => {
+      const r = view().canvas.getBoundingClientRect();
+      const target = type === 'mousedown' ? view().canvas : window;
+      target.dispatchEvent(new MouseEvent(type, { clientX: r.left + sx, clientY: r.top + sy, bubbles: true, view: window }));
+    },
+    files: () => app.files,
     frontmatter: (title: string) => app.files.find(f => f.basename === title)?.frontmatter,
     clickToday: () => (document.querySelector('[aria-label="Zoom to today"]') as HTMLElement).click(),
     ready: true,
