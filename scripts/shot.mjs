@@ -36,8 +36,8 @@ const scenarios = [
   // Tap the Dentist label, then lower its minzoom twice (5 → 4)
   { name: 'phone-tap-label', vp: PHONE, run: async mm => {
     if (!mm.tapLabel('Dentist')) throw new Error('Dentist label not drawn');
-    mm.press('Show when more zoomed out'); await new Promise(r => setTimeout(r, 50));
-    mm.press('Show when more zoomed out'); await new Promise(r => setTimeout(r, 50));
+    mm.press('Raise priority (show when more zoomed out)'); await new Promise(r => setTimeout(r, 50));
+    mm.press('Raise priority (show when more zoomed out)'); await new Promise(r => setTimeout(r, 50));
     const mz = mm.frontmatter('Dentist')['mm-minzoom'];
     if (mz !== 4) throw new Error(`expected mm-minzoom 4, got ${mz}`);
   } },
@@ -77,7 +77,10 @@ try {
     page.on('console', m => { if (m.type() === 'error') errors.push(`[${s.name}] ${m.text()}`); });
     page.on('pageerror', e => errors.push(`[${s.name}] ${e.message}`));
 
-    const url = pathToFileURL(resolve(BUILD, 'index.html')).href + (s.theme ? `?theme=${s.theme}` : '');
+    const params = new URLSearchParams();
+    if (s.theme) params.set('theme', s.theme);
+    if (s.vp.isMobile) params.set('mobile', '1');
+    const url = pathToFileURL(resolve(BUILD, 'index.html')).href + (params.size ? `?${params}` : '');
     await page.goto(url);
     await page.waitForFunction(() => window.__mm?.ready, null, { timeout: 5000 });
     if (s.run) await page.evaluate(`(${s.run.toString()})(window.__mm, ${JSON.stringify(s.arg ?? null)})`);

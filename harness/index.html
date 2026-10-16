@@ -38,6 +38,11 @@
     background: var(--background-primary); border: 1px solid var(--text-faint);
     box-shadow: 0 2px 8px rgba(0,0,0,.2);
   }
+  /* Obsidian mobile: a bottom bar floating over views (navbar 48px + offset 12px) */
+  body.is-mobile { --view-bottom-spacing: 60px; }
+  .mobile-navbar { position: fixed; left: 0; right: 0; bottom: 0; height: 60px; z-index: 50;
+    background: var(--background-primary); border-top: 1px solid var(--text-faint);
+    display: flex; align-items: center; justify-content: space-around; color: var(--text-faint); }
   .menu-item { padding: 4px 10px; white-space: pre; cursor: pointer; }
 </style>
 </head>

@@ -14,6 +14,10 @@ declare global {
 async function main() {
   const params = new URLSearchParams(location.search);
   if (params.get('theme') === 'dark') document.body.classList.add('theme-dark');
+  if (params.get('mobile')) {
+    document.body.classList.add('is-mobile');
+    document.body.createDiv({ cls: 'mobile-navbar', text: '←   →   +   ☰   ⋯' });
+  }
 
   const app = new App(document.getElementById('workspace')!);
   app.files = FIXTURE_FILES;

@@ -90,6 +90,7 @@ class MementoView extends ItemView {
   /** The entry whose minzoom panel is open. */
   private selected: { path: string; title: string; minZoom: number | undefined } | null = null;
   private panel: HTMLElement | null = null;
+  private bottomProbe: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoMoriPlugin) {
     super(leaf);
@@ -196,13 +197,19 @@ class MementoView extends ItemView {
     const panel = document.createElement('div');
     panel.addClass('memento-mori-panel');
     panel.style.cssText = `
-      position: absolute; left: 8px; right: 8px; bottom: 28px; z-index: 10; display: none;
+      position: absolute; left: 8px; right: 8px; z-index: 10; display: none;
+      bottom: calc(var(--view-bottom-spacing, 0px) + 28px);
       align-items: center; gap: 4px; padding: 4px 8px; margin: 0 auto; max-width: 420px;
       background: var(--background-secondary); border: 1px solid var(--background-modifier-border);
       border-radius: 8px; font-size: var(--font-ui-small);
     `;
     this.panel = panel;
     container.appendChild(panel);
+    // Obsidian mobile's bottom bar floats over views; --view-bottom-spacing is the room it needs
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position: absolute; visibility: hidden; pointer-events: none; height: var(--view-bottom-spacing, 0px);';
+    container.appendChild(probe);
+    this.bottomProbe = probe;
     canvas.addEventListener('click', (evt) => this.onTap(evt));
 
     // Geometry — turnAngle = 90° minus the configured skew
@@ -292,7 +299,8 @@ class MementoView extends ItemView {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     const displayZoom = (k / this.fitScale).toFixed(2);
-    ctx.fillText(`${total.toLocaleString()} cells · zoom ${displayZoom}×`, 10, h - 8);
+    const bottom = this.bottomProbe?.offsetHeight ?? 0;
+    ctx.fillText(`${total.toLocaleString()} cells · zoom ${displayZoom}×`, 10, h - 8 - bottom);
   }
 
   /** Zoomed out: one filled cell per day. */
@@ -609,14 +617,14 @@ class MementoView extends ItemView {
       panel.appendChild(b);
     };
     // Lower minzoom = the label appears when more zoomed out
-    button('minus', 'Show when more zoomed out', mz !== undefined, () =>
+    button('arrow-up', 'Raise priority (show when more zoomed out)', mz !== undefined, () =>
       this.setMinZoom(sel, mz! - MINZOOM_STEP <= MINZOOM_FLOOR ? undefined : mz! - MINZOOM_STEP));
     const value = panel.createSpan({
       text: mz === undefined ? 'always' : `${+mz.toFixed(2)} · ${+Math.pow(2, mz).toPrecision(3)}×`,
     });
     value.style.cssText = 'min-width: 72px; text-align: center; font-variant-numeric: tabular-nums;';
     value.ariaLabel = 'mm-minzoom: shown from this zoom';
-    button('plus', 'Show only when more zoomed in', (mz ?? MINZOOM_FLOOR) < MINZOOM_CEIL, () =>
+    button('arrow-down', 'Lower priority (show only when more zoomed in)', (mz ?? MINZOOM_FLOOR) < MINZOOM_CEIL, () =>
       this.setMinZoom(sel, Math.round(((mz ?? MINZOOM_FLOOR) + MINZOOM_STEP) / MINZOOM_STEP) * MINZOOM_STEP));
     button('x', 'Close', true, () => { this.selected = null; this.renderPanel(); this.draw(); });
   }

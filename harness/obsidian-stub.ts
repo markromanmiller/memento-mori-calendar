@@ -171,7 +171,7 @@ export class Menu {
 }
 
 // --- Icons: draw the icon name as text; enough to see layout ---
-const ICON_GLYPHS: Record<string, string> = { layers: '≡', crosshair: '⌖', aperture: '◎', minus: '−', plus: '+', x: '×' };
+const ICON_GLYPHS: Record<string, string> = { layers: '≡', crosshair: '⌖', aperture: '◎', 'arrow-up': '↑', 'arrow-down': '↓', x: '×' };
 export function setIcon(el: HTMLElement, name: string) {
   el.textContent = ICON_GLYPHS[name] ?? '□';
   el.dataset.icon = name;
