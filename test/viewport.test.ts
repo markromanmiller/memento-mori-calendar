@@ -1,0 +1,61 @@
+import { describe, expect, it } from 'vitest';
+import { buildGeometry } from '../src/geometry';
+import {
+  DEFAULT_ZOOM, cellCentroid, fitScale, fitView, todayView, visibleCells,
+} from '../src/viewport';
+
+const cells = buildGeometry(7, 89);
+
+// Representative viewports: phone portrait, tablet, desktop pane
+const SIZES: [string, number, number][] = [
+  ['phone', 390, 760],
+  ['tablet', 820, 1100],
+  ['desktop', 1200, 800],
+];
+
+describe('geometry', () => {
+  it('has one cell per day for ~89 years', () => {
+    expect(cells.length).toBe(32768);
+  });
+});
+
+describe('fitView', () => {
+  it.each(SIZES)('shows every cell on %s', (_, w, h) => {
+    expect(visibleCells(cells, fitView(w, h), w, h).length).toBe(cells.length);
+  });
+});
+
+describe('todayView', () => {
+  const today = 11446;
+
+  it.each(SIZES)('opens at %s zoom 64× relative to fit', (_, w, h) => {
+    const v = todayView(cells, today, w, h);
+    expect(v.k / fitScale(w, h)).toBeCloseTo(DEFAULT_ZOOM);
+  });
+
+  it.each(SIZES)('keeps today near the center on %s', (_, w, h) => {
+    const v = todayView(cells, today, w, h);
+    const [wx, wy] = cellCentroid(cells[today]);
+    const sx = wx * v.k + v.x, sy = wy * v.k + v.y;
+    // Within a quarter of the short side of center
+    const tol = Math.min(w, h) / 4;
+    expect(Math.abs(sx - w / 2)).toBeLessThan(tol);
+    expect(Math.abs(sy - h / 2)).toBeLessThan(tol);
+  });
+
+  it.each(SIZES)('shows roughly a week on %s', (_, w, h) => {
+    const visible = visibleCells(cells, todayView(cells, today, w, h), w, h);
+    expect(visible).toContain(today);
+    expect(visible.length).toBeGreaterThanOrEqual(4);
+    expect(visible.length).toBeLessThanOrEqual(30);
+  });
+
+  it.each([-1, NaN, cells.length])('falls back to fit view for todayIndex=%s', (idx) => {
+    expect(todayView(cells, idx, 390, 760)).toEqual(fitView(390, 760));
+  });
+
+  it('handles today at the very start of the curve', () => {
+    const v = todayView(cells, 0, 390, 760);
+    expect(visibleCells(cells, v, 390, 760)).toContain(0);
+  });
+});

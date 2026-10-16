@@ -1,0 +1,48 @@
+<!--
+  Dev harness: runs the real plugin in a browser against harness/obsidian-stub.ts.
+  Built and driven by scripts/shot.mjs (`npm run shot`). Not shipped with the plugin.
+-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Approximations of Obsidian's default theme variables */
+  body {
+    --background-primary: #ffffff;
+    --text-normal: #222222;
+    --text-faint: #ababab;
+    --font-text: -apple-system, "Segoe UI", system-ui, sans-serif;
+    --font-ui-small: 13px;
+    --interactive-hover: #f0f0f0;
+  }
+  body.theme-dark {
+    --background-primary: #1e1e1e;
+    --text-normal: #dadada;
+    --text-faint: #666666;
+    --interactive-hover: #363636;
+  }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--background-primary); color: var(--text-normal); font-family: var(--font-text); }
+  #workspace, .workspace-leaf-content { height: 100%; display: flex; flex-direction: column; }
+  .view-header { display: none; }
+  .view-content { flex: 1; min-height: 0; }
+  .clickable-icon {
+    background: transparent; border: none; color: var(--text-normal); height: 28px; min-width: 28px;
+    border-radius: 4px; cursor: pointer; font-size: 16px;
+  }
+  .clickable-icon:hover { background: var(--interactive-hover); }
+  .menu {
+    position: fixed; z-index: 100; padding: 4px; border-radius: 6px; font-size: 13px;
+    background: var(--background-primary); border: 1px solid var(--text-faint);
+    box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  }
+  .menu-item { padding: 4px 10px; white-space: pre; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="workspace"></div>
+<script src="harness.js"></script>
+</body>
+</html>

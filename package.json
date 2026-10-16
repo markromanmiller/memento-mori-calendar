@@ -4,16 +4,20 @@
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production"
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run",
+    "shot": "node scripts/shot.mjs"
   },
   "dependencies": {
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "esbuild": "^0.21.0",
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
     "obsidian": "latest",
-    "typescript": "^5.4.0"
+    "playwright-core": "^1.64.1",
+    "typescript": "^5.4.0",
+    "vitest": "^5.0.5"
   }
 }

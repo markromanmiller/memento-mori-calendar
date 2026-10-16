@@ -3,6 +3,7 @@ import { zoom as d3zoom, ZoomBehavior, zoomIdentity, ZoomTransform } from 'd3-zo
 import { select } from 'd3-selection';
 import { buildGeometry, Cell } from './geometry';
 import { parseVaultData, getTodayIndex, VaultData, LabelEntry, DEFAULT_PERSPECTIVE } from './data';
+import { cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
@@ -53,15 +54,7 @@ function wrapToRatio(
   return [text];
 }
 
-function cellCentroid(cell: Cell): [number, number] {
-
-  const pts = cell.points;
-  const n = pts.length;
-  return [
-    pts.reduce((s, p) => s + p[0], 0) / n,
-    pts.reduce((s, p) => s + p[1], 0) / n,
-  ];
-}
+const toTransform = (v: View): ZoomTransform => zoomIdentity.translate(v.x, v.y).scale(v.k);
 
 class MementoView extends ItemView {
   private plugin: MementoMoriPlugin;
@@ -161,71 +154,47 @@ class MementoView extends ItemView {
 
     // Geometry — turnAngle = 90° minus the configured skew
     this.cells = buildGeometry(7, 90 - this.plugin.settings.curveSkew);
-
-    // Resize
-    const ro = new ResizeObserver(() => {
-      canvas.width = container.clientWidth;
-      canvas.height = container.clientHeight;
-      this.draw();
-    });
-    ro.observe(container);
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight;
-    this.register(() => ro.disconnect());
-
-    // Initial transform
-    this.transform = this.fitTransform(canvas.width, canvas.height);
+    // Known before the first frame so the initial view can center on today
+    this.todayIndex = getTodayIndex(this.plugin.settings.birthDate);
 
     // Zoom
     const zoomBehavior = d3zoom<HTMLCanvasElement, unknown>()
-      .scaleExtent([0.05, 64])
       .on('zoom', (event) => {
         this.transform = event.transform;
         this.draw();
       });
     this.zoomBehavior = zoomBehavior;
-    select(canvas)
-      .call(zoomBehavior)
-      .call(zoomBehavior.transform, this.transform);
+    select(canvas).call(zoomBehavior);
 
-    this.draw();
+    // Resize. The container can be 0×0 when the view opens (e.g. a background
+    // tab), so the initial view waits for the first real size.
+    let initialViewApplied = false;
+    const resize = () => {
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+      if (canvas.width === 0 || canvas.height === 0) return;
+      this.fitScale = fitScale(canvas.width, canvas.height);
+      zoomBehavior.scaleExtent([this.fitScale * MIN_ZOOM, this.fitScale * MAX_ZOOM]);
+      if (!initialViewApplied) {
+        initialViewApplied = true;
+        select(canvas).call(zoomBehavior.transform,
+          toTransform(todayView(this.cells, this.todayIndex, canvas.width, canvas.height)));
+      }
+      this.draw();
+    };
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+    this.register(() => ro.disconnect());
+    resize();
+
     this.plugin.pushData();
-  }
-
-  private fitTransform(canvasW: number, canvasH: number): ZoomTransform {
-    const worldSize = 600, padding = 24;
-    const scale = (Math.min(canvasW, canvasH) - padding * 2) / worldSize;
-    this.fitScale = scale;
-    const tx = (canvasW - worldSize * scale) / 2;
-    const ty = (canvasH - worldSize * scale) / 2;
-    return zoomIdentity.translate(tx, ty).scale(scale);
   }
 
   private zoomToToday(): void {
     const canvas = this.canvas;
     const zb = this.zoomBehavior;
     if (!canvas || !zb || this.cells.length === 0) return;
-
-    const total = this.cells.length;
-    const window = 14;
-    const start = Math.max(0, this.todayIndex - window);
-    const end = Math.min(total - 1, this.todayIndex + window);
-
-    // Center of mass of ±14-day cell window
-    let sumX = 0, sumY = 0, count = 0;
-    for (let i = start; i <= end; i++) {
-      const [cx, cy] = cellCentroid(this.cells[i]);
-      sumX += cx; sumY += cy; count++;
-    }
-    if (count === 0) return;
-    const wx = sumX / count;
-    const wy = sumY / count;
-
-    const targetScale = this.fitScale * Math.pow(2, 4.5);
-    const tx = canvas.width / 2 - wx * targetScale;
-    const ty = canvas.height / 2 - wy * targetScale;
-    const target = zoomIdentity.translate(tx, ty).scale(targetScale);
-
+    const target = toTransform(todayView(this.cells, this.todayIndex, canvas.width, canvas.height));
     select(canvas).transition().duration(600)
       .call(zb.transform, target);
   }
