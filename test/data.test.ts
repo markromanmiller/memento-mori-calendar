@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSchedule, daysMask, entriesAt, formatAnchor, parseAnchor, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
+import { SCHEDULE_DEFAULTS, buildSchedule, daysMask, entriesAt, formatAnchor, parseAnchor, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
 import type { App } from 'obsidian';
 
 const settings = { birthDate: '2000-01-01', entriesDir: 'MM', curveSkew: 1, sleepHours: '23:00-07:00', workHours: '09:00-17:00', workDays: 'Mon-Fri' };
@@ -183,5 +183,24 @@ describe('annotations', () => {
       { path: undefined, title: '10a over here', day: 2, quarter: 40, u: 0.5, v: 0.5, minZoom: 6, maxZoom: 8.5 },
     ]);
     expect(data.labelEntries).toHaveLength(0);
+  });
+});
+
+describe('default schedule', () => {
+  const s = buildSchedule({ ...settings, sleepHours: SCHEDULE_DEFAULTS.sleepHours, workHours: SCHEDULE_DEFAULTS.workHours, workDays: SCHEDULE_DEFAULTS.workDays });
+  // 2000-01-01 (day 0) is a Saturday; day 2 a Monday, day 6 a Friday
+  const at = (day: number, hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return s(day, (h * 60 + m) / 15); };
+  it('sleeps until 5:30 and from 9:30 pm, works 8–4 Mon–Thu, home otherwise', () => {
+    expect(at(2, '05:15')).toBe('sleep');
+    expect(at(2, '05:30')).toBe('home');
+    expect(at(2, '07:45')).toBe('home');
+    expect(at(2, '08:00')).toBe('work');
+    expect(at(2, '15:45')).toBe('work');
+    expect(at(2, '16:00')).toBe('home');
+    expect(at(2, '21:15')).toBe('home');
+    expect(at(2, '21:30')).toBe('sleep');
+    expect(at(6, '10:00')).toBe('home');
+    expect(at(0, '10:00')).toBe('home');
+    expect(at(1, '10:00')).toBe('home');
   });
 });

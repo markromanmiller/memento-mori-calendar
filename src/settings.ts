@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type MementoMoriPlugin from './main';
+import { SCHEDULE_DEFAULTS } from './data';
 
 export interface MementoSettings {
   /** Vault-relative path to the folder containing memento mori MD entry files. */
@@ -25,9 +26,7 @@ export const DEFAULT_SETTINGS: MementoSettings = {
   entriesDir: 'Memento Mori',
   birthDate: '2000-01-01',
   curveSkew: 1,
-  sleepHours: '23:00-07:00',
-  workHours: '09:00-17:00',
-  workDays: 'Mon-Fri',
+  ...SCHEDULE_DEFAULTS,
 };
 
 export class MementoSettingTab extends PluginSettingTab {
@@ -88,9 +87,9 @@ export class MementoSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             })
         );
-    textSetting('Sleep hours', 'Shown in the Default colors. HH:MM-HH:MM; may run past midnight.', 'sleepHours', '23:00-07:00');
-    textSetting('Work hours', 'On work days. HH:MM-HH:MM.', 'workHours', '09:00-17:00');
-    textSetting('Work days', 'Mon-Fri, or a list like Mon,Tue,Thu.', 'workDays', 'Mon-Fri');
+    textSetting('Sleep hours', 'Shown in the Default colors. HH:MM-HH:MM; may run past midnight.', 'sleepHours', '21:30-05:30');
+    textSetting('Work hours', 'On work days. HH:MM-HH:MM.', 'workHours', '08:00-16:00');
+    textSetting('Work days', 'Mon-Thu, or a list like Mon,Tue,Thu.', 'workDays', 'Mon-Thu');
 
     new Setting(containerEl)
       .setName('Entries folder')

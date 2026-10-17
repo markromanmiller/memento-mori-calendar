@@ -1,5 +1,5 @@
 import { App } from 'obsidian';
-import { MementoSettings } from './settings';
+import type { MementoSettings } from './settings';
 import { QUARTERS_PER_DAY } from './geometry';
 
 export const DEFAULT_PERSPECTIVE = 'Default';
@@ -141,6 +141,9 @@ export const ACTIVITIES: Activity[] = ['sleep', 'work', 'home'];
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 /** "HH:MM-HH:MM" as a 96-slot mask of 15-minute blocks (wraps past midnight); null if malformed. */
+/** The schedule settings' defaults: sleep 9:30 pm–5:30 am, work 8–4 Monday to Thursday, home otherwise. */
+export const SCHEDULE_DEFAULTS = { sleepHours: '21:30-05:30', workHours: '08:00-16:00', workDays: 'Mon-Thu' };
+
 export function hoursMask(s: string): boolean[] | null {
   const m = /^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(s ?? '');
   if (!m) return null;
@@ -163,9 +166,9 @@ export function daysMask(s: string): boolean[] | null {
 }
 
 export function buildSchedule(settings: MementoSettings): Schedule {
-  const sleep = hoursMask(settings.sleepHours) ?? hoursMask('23:00-07:00')!;
-  const work = hoursMask(settings.workHours) ?? hoursMask('09:00-17:00')!;
-  const workDays = daysMask(settings.workDays) ?? daysMask('Mon-Fri')!;
+  const sleep = hoursMask(settings.sleepHours) ?? hoursMask(SCHEDULE_DEFAULTS.sleepHours)!;
+  const work = hoursMask(settings.workHours) ?? hoursMask(SCHEDULE_DEFAULTS.workHours)!;
+  const workDays = daysMask(settings.workDays) ?? daysMask(SCHEDULE_DEFAULTS.workDays)!;
   const birth = new Date(settings.birthDate + 'T00:00:00');
   const valid = !isNaN(birth.getTime());
   return (day, q) => {
@@ -178,7 +181,7 @@ export function buildSchedule(settings: MementoSettings): Schedule {
 
 /** Work days show as work, other days as home, in the zoomed-out Default view. */
 function buildActivityDayColors(totalCells: number, schedule: Schedule, settings: MementoSettings): string[] {
-  const work = hoursMask(settings.workHours) ?? hoursMask('09:00-17:00')!;
+  const work = hoursMask(settings.workHours) ?? hoursMask(SCHEDULE_DEFAULTS.workHours)!;
   const firstWorkQ = Math.max(0, work.indexOf(true));
   const colors = new Array<string>(totalCells);
   for (let i = 0; i < totalCells; i++) colors[i] = schedule(i, firstWorkQ) === 'work' ? 'work' : 'home';

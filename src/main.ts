@@ -1184,6 +1184,14 @@ export default class MementoMoriPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // Saved copies of the first schedule defaults move to the current ones
+    const st = this.settings;
+    if (st.sleepHours === '23:00-07:00' && st.workHours === '09:00-17:00' && st.workDays === 'Mon-Fri') {
+      st.sleepHours = DEFAULT_SETTINGS.sleepHours;
+      st.workHours = DEFAULT_SETTINGS.workHours;
+      st.workDays = DEFAULT_SETTINGS.workDays;
+      await this.saveSettings();
+    }
   }
 
   async saveSettings(): Promise<void> {
