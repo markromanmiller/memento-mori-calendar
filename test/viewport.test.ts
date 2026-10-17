@@ -113,3 +113,22 @@ describe('laneShape', () => {
     }
   });
 });
+
+describe('laneShape with spill and bevels', () => {
+  const sq = (x: number, y: number) => ({ points: [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]] as [number, number][] });
+  const blocks = [sq(0, 0), sq(2, 0), sq(2, 2)];
+  const opts = { spill: 0.3, bevel: true };
+  it('spans the block plus the spill on each side, lanes meeting edge to edge', () => {
+    const l0 = laneShape(blocks, 0, 0, 2, opts), l1 = laneShape(blocks, 0, 1, 2, opts);
+    const span = [l0.exit[0], l0.exit[1], l1.exit[0], l1.exit[1]].map(p => p[1]);
+    expect(Math.abs(span[0] - span[3])).toBeCloseTo(1.6);
+    expect(span[1]).toBeCloseTo(span[2]);
+  });
+  it('keeps lanes continuous through a beveled turn', () => {
+    for (const lane of [0, 1]) {
+      const c = laneShape(blocks, 1, lane, 2, opts).exit, d = laneShape(blocks, 2, lane, 2, opts).entry;
+      expect(c[0][0]).toBeCloseTo(d[0][0]);
+      expect(c[1][0]).toBeCloseTo(d[1][0]);
+    }
+  });
+});

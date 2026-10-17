@@ -47,14 +47,14 @@ async function main() {
       const v = view();
       v.zoomBehavior.scaleTo(select(v.canvas), v.fitScale * rel);
     },
-    /** Center a date (YYYY-MM-DD) at a relative zoom. */
-    showDay: (date: string, rel: number) => {
+    /** Center a date (YYYY-MM-DD) at a relative zoom, then shift the view by (dx, dy) screen pixels. */
+    showDay: (date: string, rel: number, dx = 0, dy = 0) => {
       const v = view();
       const birth = new Date(plugin.settings.birthDate + 'T00:00:00');
       const day = Math.round((new Date(date + 'T00:00:00').getTime() - birth.getTime()) / 86_400_000);
       const [wx, wy] = v.dayCentroids[day];
       const k = v.fitScale * rel;
-      v.zoomBehavior.transform(select(v.canvas), zoomIdentity.translate(v.cssW / 2 - wx * k, v.cssH / 2 - wy * k).scale(k));
+      v.zoomBehavior.transform(select(v.canvas), zoomIdentity.translate(v.cssW / 2 - wx * k + dx, v.cssH / 2 - wy * k + dy).scale(k));
     },
     /** Click at canvas coordinates (a tap). */
     tap: (sx: number, sy: number) => {

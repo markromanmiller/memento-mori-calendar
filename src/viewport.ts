@@ -133,13 +133,24 @@ type Pt = [number, number];
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 
 /**
+ * Bevel on a lane boundary's corner where the path turns, as a fraction of the boundary's distance from the
+ * inner corner. At 2 − √2 every lane keeps its width around the bend.
+ */
+const BEVEL = 2 - Math.SQRT2;
+
+/**
  * Lane `lane` of `lanes` through block q of a day's blocks: the parallel strip an entry keeps when it
  * overlaps others. Lanes are counted from the left of the direction of travel (previous block to next),
  * so a lane continues from block to block; in a block where the path turns, a lane is an L around the
- * inner corner. `entry` and `exit` are the lane's stretch of the block's entry and exit edges, left end
- * first, for filling the gap to the next block. One lane is the whole block.
+ * inner corner. Together the lanes span the block plus `spill` of its width on each side, and with `bevel`
+ * the corners of the L-shapes are cut at 45°. `entry` and `exit` are the lane's stretch of the block's entry
+ * and exit edges (extended by the spill), left end first, for filling the gap to the next block. One lane
+ * with no spill is the whole block.
  */
-export function laneShape(blocks: Cell[], q: number, lane: number, lanes: number): { poly: Pt[]; entry: [Pt, Pt]; exit: [Pt, Pt] } {
+export function laneShape(
+  blocks: Cell[], q: number, lane: number, lanes: number, opts: { spill?: number; bevel?: boolean } = {},
+): { poly: Pt[]; entry: [Pt, Pt]; exit: [Pt, Pt] } {
+  const spill = opts.spill ?? 0;
   const pts = blocks[q].points as Pt[];
   const c = cellCentroid(blocks[q]);
   const prev = q > 0 ? cellCentroid(blocks[q - 1]) : null;
@@ -164,23 +175,30 @@ export function laneShape(blocks: Cell[], q: number, lane: number, lanes: number
     const a = pts[e], b = pts[(e + 1) % 4];
     return isLeft(t, a) ? [a, b] : [b, a];
   };
+  // The lane's span across the path, from the left edge (0) to the right (1); spill goes past both
+  const width = (1 + 2 * spill) / lanes;
+  const c0 = -spill + lane * width, c1 = c0 + width;
   const [inL, inR] = ends(inE, tIn);
   if ((inE + 2) % 4 === outE) {
     const [outL, outR] = ends(outE, tOut);
-    const k0 = lane / lanes, k1 = (lane + 1) / lanes;
-    const eL = lerp(inL, inR, k0), eR = lerp(inL, inR, k1), oL = lerp(outL, outR, k0), oR = lerp(outL, outR, k1);
+    const eL = lerp(inL, inR, c0), eR = lerp(inL, inR, c1), oL = lerp(outL, outR, c0), oR = lerp(outL, outR, c1);
     return { poly: [eL, eR, oR, oL], entry: [eL, eR], exit: [oL, oR] };
   }
-  // A turn: lanes are L-shapes nested around the corner X the entry and exit edges share
+  // A turn: lanes are L-shapes nested around the corner X the entry and exit edges share. In the frame
+  // P(s, t) = X + s·(entry edge) + t·(exit edge), a lane boundary at distance d from X runs (d, 0) → (d, d) →
+  // (0, d); negative d is spill on the inner side, behind X.
   const x = outE === (inE + 1) % 4 ? (inE + 1) % 4 : inE;
   const X = pts[x];
   const A = pts[x === inE ? (inE + 1) % 4 : inE];             // the entry edge's other end
   const B = pts[x === outE ? (outE + 1) % 4 : outE];          // the exit edge's other end
   const xLeft = inL === X;                                    // a left turn: the inner corner is on the left
-  const i = xLeft ? lane : lanes - 1 - lane;
-  const a = i / lanes, b = (i + 1) / lanes;
+  const a = xLeft ? c0 : 1 - c1, b = xLeft ? c1 : 1 - c0;
   const P = (s: number, t: number): Pt => [X[0] + s * (A[0] - X[0]) + t * (B[0] - X[0]), X[1] + s * (A[1] - X[1]) + t * (B[1] - X[1])];
+  const k = opts.bevel ? 1 - BEVEL : 1;                       // a boundary's corner (d, d) cut back to d·k
   const entry: [Pt, Pt] = xLeft ? [P(a, 0), P(b, 0)] : [P(b, 0), P(a, 0)];
   const exit: [Pt, Pt] = xLeft ? [P(0, a), P(0, b)] : [P(0, b), P(0, a)];
-  return { poly: [P(a, 0), P(b, 0), P(b, b), P(0, b), P(0, a), P(a, a)], entry, exit };
+  return {
+    poly: [P(a, 0), P(b, 0), P(b, b * k), P(b * k, b), P(0, b), P(0, a), P(a * k, a), P(a, a * k)],
+    entry, exit,
+  };
 }

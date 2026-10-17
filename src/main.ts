@@ -139,6 +139,9 @@ const HOUR_TICK = { light: 'rgba(0, 0, 0, 0.18)', dark: 'rgba(255, 255, 255, 0.1
  * from SUNDAY_ZOOM Sundays, from DAY_ZOOM every day; from HOURS_ZOOM the date sits on the midnight block
  * ("16th") and every other hour is labeled on its first block.
  */
+/** Overlapping entries' lanes together span the block plus this much of its width on each side. */
+const LANE_SPILL = 0.3;
+
 const YEAR_ZOOM = 2.8;
 const MONTH_ZOOM = 8;
 const SUNDAY_ZOOM = 22.6;
@@ -528,18 +531,38 @@ class MementoView extends ItemView {
         const future = abs > nowQ;
         const fills = fillsByBlock?.get(abs);
         const under = schedule ? schedule(d, q) : dayColor;
-        // The activity (or day) color, in the lanes no entry fills (a free entry is only an outline)
+        // The activity (or day) color, in the lanes no entry fills (a free entry is only an outline);
+        // overlapping lanes spill past the block, but the activity color stays inside it
         ctx.globalAlpha = future ? futureAlpha(under) : 1.0;
         ctx.fillStyle = resolve(under);
         const lanes = fills?.[0].lanes ?? 1;
-        for (let lane = 0; lane < lanes; lane++) {
+        const shapeOpts = lanes > 1 ? { spill: LANE_SPILL, bevel: true } : {};
+        const open = [...Array(lanes).keys()].filter(lane => {
           const f = fills?.find(x => x.lane === lane);
-          if (f && f.status !== 'free') continue;
-          tracePolygon(ctx, lanes === 1 ? blocks[q].points : laneShape(blocks, q, lane, lanes).poly);
+          return !f || f.status === 'free';
+        });
+        if (lanes === 1 && open.length) {
+          tracePolygon(ctx, blocks[q].points);
           ctx.fill();
+        } else if (open.length) {
+          // The block minus the filled lanes (even-odd: inside the block and not inside a lane)
+          const traceBlock = () => tracePolygon(ctx, blocks[q].points);
+          ctx.save();
+          traceBlock();
+          for (const f of fills ?? []) {
+            if (f.status === 'free') continue;
+            const pts = laneShape(blocks, q, f.lane, lanes, shapeOpts).poly;
+            ctx.moveTo(pts[0][0], pts[0][1]);
+            for (const p of pts.slice(1)) ctx.lineTo(p[0], p[1]);
+            ctx.closePath();
+          }
+          ctx.clip('evenodd');
+          traceBlock();
+          ctx.fill();
+          ctx.restore();
         }
         for (const f of fills ?? []) {
-          const shape = laneShape(blocks, q, f.lane, f.lanes);
+          const shape = laneShape(blocks, q, f.lane, f.lanes, shapeOpts);
           const color = resolve(f.color);
           ctx.globalAlpha = future ? futureAlpha(f.color) : 1.0;
           if (f.status === 'free') {
@@ -561,7 +584,7 @@ class MementoView extends ItemView {
           paint(shape.poly);
           // The same entry continues into the next block: fill the gap between them, lane to lane
           if (f.next) {
-            const n = laneShape(blocks, q + 1, f.lane, f.lanes);
+            const n = laneShape(blocks, q + 1, f.lane, f.lanes, shapeOpts);
             paint([shape.exit[0], shape.exit[1], n.entry[1], n.entry[0]]);
           }
         }
