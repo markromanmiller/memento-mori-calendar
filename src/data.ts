@@ -347,37 +347,38 @@ export function parseVaultData(
   const inDays = (d: number) => d >= 0 && d < totalCells;
   const inQuarters = (q: number) => q >= 0 && q < totalQuarters;
 
-  // Built-in perspectives: a base (activity or month hue) with entries marked in the theme's text color
+  // Built-in perspectives: a base (activity or month hue) with entries marked in the theme's text color.
+  // Default marks only the 15-minute blocks of timed entries; Old default also marks whole days.
   const schedule = buildSchedule(settings);
-  const builtin = (name: string, base: string[]) => {
+  const builtin = (name: string, base: string[], markDays: boolean) => {
     const quarters = new Map<number, string>();
     // Date-only range boundaries and events mark the whole day; skip end day for ongoing ranges
-    for (const r of ranges) {
+    for (const r of markDays ? ranges : []) {
       if (r.timed) continue;
       if (inDays(r.startDay)) base[r.startDay] = EVENT_COLOR;
       if (!r.ongoing && inDays(r.endDay)) base[r.endDay] = EVENT_COLOR;
     }
-    for (const e of events) if (e.quarter === null && inDays(e.day)) base[e.day] = EVENT_COLOR;
+    if (markDays) for (const e of events) if (e.quarter === null && inDays(e.day)) base[e.day] = EVENT_COLOR;
 
     // Timed entries fill their own blocks, and mark their days when zoomed out
     const days = base.slice();
     for (const r of ranges) {
       if (!r.timed || r.ongoing) continue;
       for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, EVENT_COLOR);
-      for (let d = Math.max(0, r.startDay); d <= Math.min(totalCells - 1, r.endDay); d++) days[d] = EVENT_COLOR;
+      if (markDays) for (let d = Math.max(0, r.startDay); d <= Math.min(totalCells - 1, r.endDay); d++) days[d] = EVENT_COLOR;
     }
     for (const e of events) {
       if (e.quarter === null) continue;
       const q = e.day * Q + e.quarter;
       if (inQuarters(q)) quarters.set(q, EVENT_COLOR);
-      if (inDays(e.day)) days[e.day] = EVENT_COLOR;
+      if (markDays && inDays(e.day)) days[e.day] = EVENT_COLOR;
     }
     dayColorsByPerspective.set(name, days);
     dayBaseColorsByPerspective.set(name, base);
     quarterColorsByPerspective.set(name, quarters);
   };
-  builtin(DEFAULT_PERSPECTIVE, buildActivityDayColors(totalCells, schedule, settings));
-  builtin(OLD_DEFAULT_PERSPECTIVE, buildDefaultColors(totalCells, birth));
+  builtin(DEFAULT_PERSPECTIVE, buildActivityDayColors(totalCells, schedule, settings), false);
+  builtin(OLD_DEFAULT_PERSPECTIVE, buildDefaultColors(totalCells, birth), true);
 
   // Sort ranges by duration descending so shorter (more specific) overwrites
   const sorted = [...ranges].sort((a, b) => b.duration - a.duration);

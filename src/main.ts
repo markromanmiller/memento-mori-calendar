@@ -120,19 +120,63 @@ const MINZOOM_CEIL = Math.log2(MAX_ZOOM);
 const isPlainColor = (c: string) => c.startsWith('hsl(') || c === GRAY || (ACTIVITIES as string[]).includes(c);
 
 /** Default perspective: colors for sleep, work and home hours, per theme. */
+/** Default perspective: work in Illinois Tech red, home gray-blue, sleep pale. */
 const ACTIVITY_COLORS: Record<'light' | 'dark', Record<Activity, string>> = {
-  light: { sleep: 'hsl(230, 25%, 84%)', home: 'hsl(38, 80%, 72%)', work: 'hsl(200, 60%, 62%)' },
-  dark: { sleep: 'hsl(230, 18%, 26%)', home: 'hsl(38, 50%, 44%)', work: 'hsl(200, 50%, 42%)' },
+  light: { sleep: 'hsl(215, 15%, 90%)', home: 'hsl(212, 22%, 64%)', work: '#cc0000' },
+  dark: { sleep: 'hsl(215, 12%, 20%)', home: 'hsl(212, 18%, 40%)', work: 'hsl(0, 70%, 38%)' },
 };
 /** Hour marks in the 15-minute view: the first block of each hour gets this overlay. */
 const HOUR_TICK = { light: 'rgba(0, 0, 0, 0.18)', dark: 'rgba(255, 255, 255, 0.18)' };
-/** Screen sizes (px) at which hour labels appear: every 3 hours on the 3-hour square, every hour on its block. */
-const THREE_HOUR_LABEL_PX = 36;
-const HOUR_LABEL_PX = 20;
+
+/**
+ * Date labels by relative zoom: from YEAR_ZOOM each Jan 1 (the year), from MONTH_ZOOM each month's first,
+ * from SUNDAY_ZOOM Sundays, from DAY_ZOOM every day; from HOURS_ZOOM the date sits on the midnight block
+ * ("16th") and every other hour is labeled on its first block.
+ */
+const YEAR_ZOOM = 2.8;
+const MONTH_ZOOM = 8;
+const SUNDAY_ZOOM = 22.6;
+const DAY_ZOOM = 64;
+const HOURS_ZOOM = 181;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function hourText(h: number): string {
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}${h < 12 ? 'a' : 'p'}`;
+}
+
+function ordinal(n: number): string {
+  const t = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return `${n}${t}`;
+}
+
+/** Year, month (0–11), day of month and weekday (0 = Sunday) of every day index, for date labels. */
+type DayDates = { birth: string; year: Int16Array; month: Uint8Array; date: Uint8Array; weekday: Uint8Array };
+
+function dayDates(birthDate: string, total: number): DayDates {
+  const b = new Date(birthDate + 'T00:00:00');
+  const out: DayDates = {
+    birth: birthDate, year: new Int16Array(total), month: new Uint8Array(total),
+    date: new Uint8Array(total), weekday: new Uint8Array(total),
+  };
+  for (let i = 0; i < total; i++) {
+    const d = new Date(b.getFullYear(), b.getMonth(), b.getDate() + i);
+    out.year[i] = d.getFullYear(); out.month[i] = d.getMonth();
+    out.date[i] = d.getDate(); out.weekday[i] = d.getDay();
+  }
+  return out;
+}
+
+/** A day's date label at a relative zoom below HOURS_ZOOM, or null when that day isn't labeled yet. */
+function dateText(dd: DayDates, i: number, z: number): string | null {
+  const date = dd.date[i], month = dd.month[i];
+  if (date === 1 && month === 0) {
+    if (z < YEAR_ZOOM) return null;
+    return z < SUNDAY_ZOOM ? `${dd.year[i]}` : `Jan 1, ${dd.year[i]}`;
+  }
+  if (date === 1) return z >= MONTH_ZOOM ? `${MONTHS[month]} 1` : null;
+  if (dd.weekday[i] === 0) return z >= SUNDAY_ZOOM ? `${date}` : null;
+  return z >= DAY_ZOOM ? `${date}` : null;
 }
 
 function tracePolygon(ctx: CanvasRenderingContext2D, points: [number, number][]): void {
@@ -156,6 +200,10 @@ class MementoView extends ItemView {
   private zoomBehavior: ZoomBehavior<HTMLCanvasElement, unknown> | null = null;
   /** Scale factor at which the full calendar fits the viewport (zoom level 0). */
   private fitScale = 1;
+  /** Canvas size in CSS pixels, and device pixels per CSS pixel. */
+  private cssW = 0;
+  private cssH = 0;
+  private dpr = 1;
   /** Screen boxes of the labels drawn last frame, for tapping. */
   private labelHits: (Box & { entry: LabelEntry })[] = [];
   private annotationHits: (Box & { ann: Annotation })[] = [];
@@ -322,15 +370,21 @@ class MementoView extends ItemView {
     // tab), so the initial view waits for the first real size.
     let initialViewApplied = false;
     const resize = () => {
-      canvas.width = container.clientWidth;
-      canvas.height = container.clientHeight;
-      if (canvas.width === 0 || canvas.height === 0) return;
-      this.fitScale = fitScale(canvas.width, canvas.height);
+      // The backing store is in device pixels so drawing is sharp; everything else works in CSS pixels
+      this.cssW = container.clientWidth;
+      this.cssH = container.clientHeight;
+      this.dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(this.cssW * this.dpr);
+      canvas.height = Math.round(this.cssH * this.dpr);
+      canvas.style.width = `${this.cssW}px`;
+      canvas.style.height = `${this.cssH}px`;
+      if (this.cssW === 0 || this.cssH === 0) return;
+      this.fitScale = fitScale(this.cssW, this.cssH);
       zoomBehavior.scaleExtent([this.fitScale * MIN_ZOOM, this.fitScale * MAX_ZOOM]);
       if (!initialViewApplied) {
         initialViewApplied = true;
         select(canvas).call(zoomBehavior.transform,
-          toTransform(todayView(this.cells, this.todayIndex, canvas.width, canvas.height)));
+          toTransform(todayView(this.cells, this.todayIndex, this.cssW, this.cssH)));
       }
       this.draw();
     };
@@ -346,7 +400,7 @@ class MementoView extends ItemView {
     const canvas = this.canvas;
     const zb = this.zoomBehavior;
     if (!canvas || !zb || this.cells.length === 0) return;
-    const target = toTransform(todayView(this.cells, this.todayIndex, canvas.width, canvas.height));
+    const target = toTransform(todayView(this.cells, this.todayIndex, this.cssW, this.cssH));
     select(canvas).transition().duration(600)
       .call(zb.transform, target);
   }
@@ -357,13 +411,17 @@ class MementoView extends ItemView {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const w = canvas.width;
-    const h = canvas.height;
+    const w = this.cssW;
+    const h = this.cssH;
     const { k, x, y } = this.transform;
+    const dpr = this.dpr;
 
-    ctx.clearRect(0, 0, w, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Screen drawing is in CSS pixels; world drawing adds the zoom transform
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.save();
-    ctx.setTransform(k, 0, 0, k, x, y);
+    ctx.setTransform(k * dpr, 0, 0, k * dpr, x * dpr, y * dpr);
 
     const total = this.cells.length;
     // Resolve 'default' sentinel to theme text color (adapts to light/dark mode)
@@ -378,6 +436,8 @@ class MementoView extends ItemView {
 
     // --- Labels ---
     this.drawLabels(ctx, k, x, y, total, w, h, themeTextColor, quarterView);
+    // After the entry labels, so dates give way to them
+    if (k / this.fitScale < HOURS_ZOOM) this.drawDateLabels(ctx, k, x, y, w, h);
     this.drawAnnotations(ctx, w, h);
 
     // HUD
@@ -489,42 +549,83 @@ class MementoView extends ItemView {
   }
 
   /**
-   * Hour labels in the 15-minute view: "12a 3a 6a …" on each 3-hour square once those are big enough,
-   * then every hour on its first block. Drawn in world space; the caller's transform is active.
+   * From HOURS_ZOOM: the date on each day's midnight block ("16th", or "Nov 1" for a month's first) and
+   * every other hour on its first block. Drawn in world space; the caller's transform is active.
    */
   private drawHourLabels(ctx: CanvasRenderingContext2D, k: number, days: number[], color: string): void {
     const geom = this.geometry;
-    if (!geom || !days.length) return;
+    if (!geom || !days.length || k / this.fitScale < HOURS_ZOOM) return;
+    const dd = this.dayDates();
     const blockPx = cellSize(geom.quarters(days[0])[0]) * k;
-    const threeHourPx = blockPx * 6;    // a 3-hour square is 2 × 45-minute squares of 3 cells
-    const every = blockPx >= HOUR_LABEL_PX ? 1 : threeHourPx >= THREE_HOUR_LABEL_PX ? 3 : 0;
-    if (!every) return;
     const style = getComputedStyle(this.canvas!);
     const fontFamily = style.getPropertyValue('--font-text').trim() || 'system-ui, sans-serif';
-    const px = every === 1 ? Math.min(14, blockPx * 0.5) : Math.min(14, threeHourPx * 0.3);
+    const px = Math.min(14, blockPx * 0.5);
     ctx.save();
-    ctx.font = `600 ${px / k}px ${fontFamily}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
     ctx.lineWidth = 3 / k;
     ctx.strokeStyle = style.getPropertyValue('--background-primary').trim() || '#fff';
     ctx.fillStyle = color;
-    ctx.globalAlpha = 0.75;
     for (const d of days) {
       const blocks = geom.quarters(d);
-      for (let h = 0; h < 24; h += every) {
-        let pos: [number, number];
-        if (every === 1) pos = cellCentroid(blocks[h * 4]);
-        else {
-          // Center of the 3-hour square: mean of its 12 blocks' centroids
-          let sx = 0, sy = 0;
-          for (let q = h * 4; q < h * 4 + 12; q++) { const [x, y] = cellCentroid(blocks[q]); sx += x; sy += y; }
-          pos = [sx / 12, sy / 12];
-        }
-        ctx.strokeText(hourText(h), pos[0], pos[1]);
-        ctx.fillText(hourText(h), pos[0], pos[1]);
+      for (let h = 0; h < 24; h++) {
+        const text = h > 0 ? hourText(h)
+          : dd.date[d] === 1 ? `${MONTHS[dd.month[d]]} 1` : ordinal(dd.date[d]);
+        ctx.font = `${h === 0 ? 700 : 600} ${px / k}px ${fontFamily}`;
+        ctx.globalAlpha = h === 0 ? 1 : 0.75;
+        const [x, y] = cellCentroid(blocks[h * 4]);
+        ctx.strokeText(text, x, y);
+        ctx.fillText(text, x, y);
       }
+    }
+    ctx.restore();
+  }
+
+  private dates: DayDates | null = null;
+  private dayDates(): DayDates {
+    const birth = this.plugin.settings.birthDate;
+    if (!this.dates || this.dates.birth !== birth || this.dates.date.length !== this.cells.length) {
+      this.dates = dayDates(birth, this.cells.length);
+    }
+    return this.dates;
+  }
+
+  /** Date labels on the days, more of them the further in (see YEAR_ZOOM … DAY_ZOOM). Screen space. */
+  private drawDateLabels(ctx: CanvasRenderingContext2D, k: number, tx: number, ty: number, w: number, h: number): void {
+    const z = k / this.fitScale;
+    if (z < YEAR_ZOOM || !this.cells.length) return;
+    const dd = this.dayDates();
+    const style = getComputedStyle(this.canvas!);
+    const fontFamily = style.getPropertyValue('--font-text').trim() || 'system-ui, sans-serif';
+    const PX = 11;
+    ctx.save();
+    ctx.font = `600 ${PX}px ${fontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = style.getPropertyValue('--background-primary').trim() || '#fff';
+    ctx.fillStyle = style.getPropertyValue('--text-muted').trim() || '#666';
+    // Years first, then month starts, Sundays, other days, so the coarser labels win a collision
+    const rank = (i: number) => dd.date[i] === 1 ? (dd.month[i] === 0 ? 0 : 1) : dd.weekday[i] === 0 ? 2 : 3;
+    const shown: { i: number; text: string; sx: number; sy: number; r: number }[] = [];
+    for (let i = 0; i < this.cells.length; i++) {
+      const [wx, wy] = this.dayCentroids[i];
+      const sx = wx * k + tx, sy = wy * k + ty;
+      if (sx < -40 || sx > w + 40 || sy < -20 || sy > h + 20) continue;
+      const text = dateText(dd, i, z);
+      if (text) shown.push({ i, text, sx, sy, r: rank(i) });
+    }
+    shown.sort((a, b) => a.r - b.r);
+    const boxes: Box[] = this.labelHits.slice();
+    for (const l of shown) {
+      const hw = ctx.measureText(l.text).width / 2 + 2;
+      const box = { l: l.sx - hw, r: l.sx + hw, t: l.sy - PX / 2 - 1, b: l.sy + PX / 2 + 1 };
+      if (boxes.some(o => box.r > o.l && box.l < o.r && box.b > o.t && box.t < o.b)) continue;
+      boxes.push(box);
+      ctx.strokeText(l.text, l.sx, l.sy);
+      ctx.fillText(l.text, l.sx, l.sy);
     }
     ctx.restore();
   }
@@ -535,6 +636,7 @@ class MementoView extends ItemView {
     total: number, canvasW: number, canvasH: number,
     textColor: string, quarterView: boolean,
   ): void {
+    this.labelHits = [];
     if (!this.vaultData?.labelEntries.length) return;
 
     const style = getComputedStyle(this.canvas!);

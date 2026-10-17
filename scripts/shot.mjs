@@ -20,7 +20,7 @@ const OUT = resolve(ROOT, 'screenshots');
 const TODAY = '2026-10-16T12:00:00'; // keep in sync with harness/fixture.ts
 const CHROME = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 
-const PHONE = { width: 390, height: 760, isMobile: true, hasTouch: true };
+const PHONE = { width: 390, height: 760, isMobile: true, hasTouch: true, deviceScaleFactor: 3 };
 const DESKTOP = { width: 1200, height: 800 };
 
 const scenarios = [
@@ -39,6 +39,11 @@ const scenarios = [
     [...document.querySelectorAll('.menu-item')].find(e => e.textContent.includes('Old default')).click();
   } },
   { name: 'phone-128', vp: PHONE, run: mm => mm.setZoom(128) },
+  // Date label tiers: years, month starts, Sundays, every day, dates with hours
+  { name: 'phone-dates-4', vp: PHONE, run: mm => mm.setZoom(4) },
+  { name: 'phone-dates-12', vp: PHONE, run: mm => mm.setZoom(12) },
+  { name: 'phone-dates-32', vp: PHONE, run: mm => mm.setZoom(32) },
+  { name: 'phone-dates-200', vp: PHONE, run: mm => mm.setZoom(200) },
   // Double-tap empty space to add an annotation, then hold and drag the fixture one; screenshot mid-drag
   { name: 'phone-annotations', vp: PHONE, run: async mm => {
     const wait = ms => new Promise(r => setTimeout(r, ms));

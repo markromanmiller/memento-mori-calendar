@@ -71,10 +71,14 @@ describe('timed entries', () => {
     expect(quarters.has(7 * Q)).toBe(false);
   });
 
-  it('marks timed days when zoomed out but not under the blocks', () => {
-    expect(days[1]).toBe('default');
-    expect(base[1]).not.toBe('default');
-    expect(base[9]).toBe('default');                 // date-only event still marks its whole day
+  it('leaves days unmarked in Default; Old default marks them when zoomed out but not under the blocks', () => {
+    expect(days[1]).not.toBe('default');
+    expect(base[9]).not.toBe('default');
+    const oldDays = data.dayColorsByPerspective.get(OLD_DEFAULT_PERSPECTIVE)!;
+    const oldBase = data.dayBaseColorsByPerspective.get(OLD_DEFAULT_PERSPECTIVE)!;
+    expect(oldDays[1]).toBe('default');
+    expect(oldBase[1]).not.toBe('default');
+    expect(oldBase[9]).toBe('default');              // date-only event still marks its whole day
   });
 
   it('colors timed ranges in their perspective', () => {
