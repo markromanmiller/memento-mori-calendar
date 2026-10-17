@@ -3,6 +3,7 @@
  * hooks on window.__mm for scripts/shot.mjs.
  */
 import { select } from 'd3-selection';
+import { zoomIdentity } from 'd3-zoom';
 import { App } from './obsidian-stub';
 import { FIXTURE_FILES, FIXTURE_SETTINGS } from './fixture';
 import MementoMoriPlugin from '../src/main';
@@ -45,6 +46,15 @@ async function main() {
     setZoom: (rel: number) => {
       const v = view();
       v.zoomBehavior.scaleTo(select(v.canvas), v.fitScale * rel);
+    },
+    /** Center a date (YYYY-MM-DD) at a relative zoom. */
+    showDay: (date: string, rel: number) => {
+      const v = view();
+      const birth = new Date(plugin.settings.birthDate + 'T00:00:00');
+      const day = Math.round((new Date(date + 'T00:00:00').getTime() - birth.getTime()) / 86_400_000);
+      const [wx, wy] = v.dayCentroids[day];
+      const k = v.fitScale * rel;
+      v.zoomBehavior.transform(select(v.canvas), zoomIdentity.translate(v.cssW / 2 - wx * k, v.cssH / 2 - wy * k).scale(k));
     },
     /** Click at canvas coordinates (a tap). */
     tap: (sx: number, sy: number) => {

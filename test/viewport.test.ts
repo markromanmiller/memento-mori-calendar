@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildGeometry } from '../src/geometry';
 import {
-  DEFAULT_ZOOM, blockPoint, blockUV, cellAt, cellCentroid, fitScale, gapQuad, fitView, todayView, visibleCells,
+  DEFAULT_ZOOM, blockPoint, blockUV, cellAt, cellCentroid, fitScale, laneShape, fitView, todayView, visibleCells,
 } from '../src/viewport';
 
 const cells = buildGeometry(89).days;
@@ -91,13 +91,25 @@ describe('block frame', () => {
   });
 });
 
-describe('gapQuad', () => {
-  it('spans exactly the gap between two side-by-side squares', () => {
-    const a: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
-    const b: [number, number][] = [[2, 0], [3, 0], [3, 1], [2, 1]];
-    const quad = gapQuad(a, b);
-    expect(quad.map(p => p[0]).sort()).toEqual([1, 1, 2, 2]);
-    // Not twisted: the two edges at x = 1 and x = 2 are joined top to top, bottom to bottom
-    expect(quad[1][1]).toBe(quad[2][1]);
+describe('laneShape', () => {
+  const sq = (x: number, y: number) => ({ points: [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]] as [number, number][] });
+  // A row going right, then a turn down: (0,0) → (2,0) → (2,2)
+  const blocks = [sq(0, 0), sq(2, 0), sq(2, 2)];
+  const area = (p: [number, number][]) => Math.abs(p.reduce((s, a, i) => { const b = p[(i + 1) % p.length]; return s + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
+  it('splits a block into lanes that cover it exactly', () => {
+    for (const q of [0, 1, 2]) {
+      expect(area(laneShape(blocks, q, 0, 1).poly)).toBeCloseTo(1);
+      expect(area(laneShape(blocks, q, 0, 2).poly) + area(laneShape(blocks, q, 1, 2).poly)).toBeCloseTo(1);
+    }
+  });
+  it('keeps each lane on the same side from one block to the next', () => {
+    for (const lane of [0, 1]) {
+      const a = laneShape(blocks, 0, lane, 2).exit, b = laneShape(blocks, 1, lane, 2).entry;
+      expect(a[0][1]).toBeCloseTo(b[0][1]);   // same y band across the horizontal gap
+      expect(a[1][1]).toBeCloseTo(b[1][1]);
+      const c = laneShape(blocks, 1, lane, 2).exit, d = laneShape(blocks, 2, lane, 2).entry;
+      expect(c[0][0]).toBeCloseTo(d[0][0]);   // same x band across the vertical gap after the turn
+      expect(c[1][0]).toBeCloseTo(d[1][0]);
+    }
   });
 });

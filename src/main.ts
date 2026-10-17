@@ -7,7 +7,7 @@ import {
   Activity, ACTIVITIES,
   DEFAULT_PERSPECTIVE, BUILTIN_PERSPECTIVES,
 } from './data';
-import { blockPoint, blockUV, cellAt, gapQuad, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
+import { blockPoint, blockUV, cellAt, laneShape, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
@@ -498,8 +498,8 @@ class MementoView extends ItemView {
     if (!geom) return;
     const total = this.cells.length;
     const base = this.vaultData?.dayBaseColorsByPerspective.get(this.currentPerspective);
-    const blockColors = this.vaultData?.quarterColorsByPerspective.get(this.currentPerspective);
-    const bridges = this.vaultData?.quarterBridgesByPerspective.get(this.currentPerspective);
+    const fillsByBlock = this.vaultData?.quarterFillsByPerspective.get(this.currentPerspective);
+    const stripes = this.stripes(ctx, k);
     const hasBase = base?.length === total;
     const nowQ = getNowQuarter(this.plugin.settings.birthDate);
     const resolve = (c: string) => this.resolveColor(c, themeTextColor);
@@ -525,21 +525,51 @@ class MementoView extends ItemView {
       const blocks = geom.quarters(d);
       for (let q = 0; q < QUARTERS_PER_DAY; q++) {
         const abs = d * QUARTERS_PER_DAY + q;
-        const raw = blockColors?.get(abs) ?? (schedule ? schedule(d, q) : dayColor);
-        ctx.globalAlpha = abs > nowQ ? futureAlpha(raw) : 1.0;
-        ctx.fillStyle = resolve(raw);
-        tracePolygon(ctx, blocks[q].points);
-        ctx.fill();
-        // Hour mark: shade the first block of each hour
-        if (q % 4 === 0) {
-          ctx.fillStyle = hourTick;
+        const future = abs > nowQ;
+        const fills = fillsByBlock?.get(abs);
+        const under = schedule ? schedule(d, q) : dayColor;
+        // The activity (or day) color, in the lanes no entry fills (a free entry is only an outline)
+        ctx.globalAlpha = future ? futureAlpha(under) : 1.0;
+        ctx.fillStyle = resolve(under);
+        const lanes = fills?.[0].lanes ?? 1;
+        for (let lane = 0; lane < lanes; lane++) {
+          const f = fills?.find(x => x.lane === lane);
+          if (f && f.status !== 'free') continue;
+          tracePolygon(ctx, lanes === 1 ? blocks[q].points : laneShape(blocks, q, lane, lanes).poly);
           ctx.fill();
         }
-        // One timed entry covering this block and the next: fill the gap between them
-        const next = blockColors?.get(abs + 1);
-        if (bridges?.has(abs) && next === raw) {
-          ctx.fillStyle = resolve(raw);
-          tracePolygon(ctx, gapQuad(blocks[q].points, blocks[q + 1].points));
+        for (const f of fills ?? []) {
+          const shape = laneShape(blocks, q, f.lane, f.lanes);
+          const color = resolve(f.color);
+          ctx.globalAlpha = future ? futureAlpha(f.color) : 1.0;
+          if (f.status === 'free') {
+            // Free: an outline, so whatever is under it still shows
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2 / k;
+            ctx.lineJoin = 'miter';
+            tracePolygon(ctx, shape.poly);
+            ctx.stroke();
+            continue;
+          }
+          const paint = (pts: [number, number][]) => {
+            tracePolygon(ctx, pts);
+            ctx.fillStyle = color;
+            ctx.fill();
+            // Tentative: striped
+            if (f.status === 'tentative' && stripes) { ctx.fillStyle = stripes; ctx.fill(); }
+          };
+          paint(shape.poly);
+          // The same entry continues into the next block: fill the gap between them, lane to lane
+          if (f.next) {
+            const n = laneShape(blocks, q + 1, f.lane, f.lanes);
+            paint([shape.exit[0], shape.exit[1], n.entry[1], n.entry[0]]);
+          }
+        }
+        // Hour mark: shade the first block of each hour
+        if (q % 4 === 0) {
+          ctx.globalAlpha = future ? futureAlpha(fills?.[0].color ?? under) : 1.0;
+          ctx.fillStyle = hourTick;
+          tracePolygon(ctx, blocks[q].points);
           ctx.fill();
         }
       }
@@ -594,6 +624,30 @@ class MementoView extends ItemView {
       }
     }
     ctx.restore();
+  }
+
+  private stripeCache: { bg: string; pattern: CanvasPattern } | null = null;
+  /** Diagonal stripes in the background color, 8 screen pixels apart, laid over tentative entries. */
+  private stripes(ctx: CanvasRenderingContext2D, k: number): CanvasPattern | null {
+    const bg = getComputedStyle(this.canvas!).getPropertyValue('--background-primary').trim() || '#fff';
+    if (this.stripeCache?.bg !== bg) {
+      const tile = document.createElement('canvas');
+      tile.width = tile.height = 8;
+      const g = tile.getContext('2d');
+      if (!g) return null;
+      g.strokeStyle = bg;
+      g.globalAlpha = 0.55;
+      g.lineWidth = 2.5;
+      g.beginPath();
+      for (const o of [-8, 0, 8]) { g.moveTo(o, 8); g.lineTo(o + 8, 0); }
+      g.stroke();
+      const pattern = ctx.createPattern(tile, 'repeat');
+      if (!pattern) return null;
+      this.stripeCache = { bg, pattern };
+    }
+    // The pattern lives in world space; scale it so its stripes stay a fixed size on screen
+    this.stripeCache.pattern.setTransform(new DOMMatrix().scale(1 / k));
+    return this.stripeCache.pattern;
   }
 
   private dates: DayDates | null = null;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SCHEDULE_DEFAULTS, buildSchedule, daysMask, entriesAt, formatAnchor, parseAnchor, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
+import { SCHEDULE_DEFAULTS, laneFills, LONG_QUARTERS, buildSchedule, daysMask, entriesAt, formatAnchor, parseAnchor, hoursMask, parseVaultData, OLD_DEFAULT_PERSPECTIVE, parseWhen, DEFAULT_PERSPECTIVE, LabelEntry } from '../src/data';
 import type { App } from 'obsidian';
 
 const settings = { birthDate: '2000-01-01', entriesDir: 'MM', curveSkew: 1, sleepHours: '23:00-07:00', workHours: '09:00-17:00', workDays: 'Mon-Fri' };
@@ -47,6 +47,7 @@ describe('timed entries', () => {
   const data = parseVaultData(fakeApp({
     Dentist: { mm: 'range', 'mm-start': '2000-01-02T13:00', 'mm-end': '2000-01-02T14:00' },
     Call: { mm: 'event', 'mm-date': '2000-01-03T15:20' },
+    Evening: { mm: 'range', 'mm-start': '2000-01-05T18:00', 'mm-end': '2000-01-05' },
     Trip: { mm: 'range', 'mm-start': '2000-01-05T18:00', 'mm-end': '2000-01-07' },
     Work: { mm: 'range', 'mm-start': '2000-01-02T08:00', 'mm-end': '2000-01-02T12:00', 'mm-color': '#f00', 'mm-color-perspective': 'Life' },
     Birthday: { mm: 'event', 'mm-date': '2000-01-10' },
@@ -72,11 +73,15 @@ describe('timed entries', () => {
     expect(quarters.has(2 * Q + 62)).toBe(false);
   });
 
+  it('leaves a timed range over 12 hours unfilled (Trip runs 18:00 on the 5th through the 7th)', () => {
+    expect(quarters.has(5 * Q + 40)).toBe(false);
+  });
+
   it('runs a range with a date-only end through the end of that day', () => {
     expect(quarters.has(4 * Q + 71)).toBe(false);  // 17:45 on the 5th
     expect(quarters.has(4 * Q + 72)).toBe(true);   // 18:00 on the 5th
-    expect(quarters.has(6 * Q + 95)).toBe(true);   // last block of the 7th
-    expect(quarters.has(7 * Q)).toBe(false);
+    expect(quarters.has(4 * Q + 95)).toBe(true);   // last block of the 5th
+    expect(quarters.has(5 * Q)).toBe(false);
   });
 
   it('leaves days unmarked in Default; Old default marks them when zoomed out but not under the blocks', () => {
@@ -210,5 +215,40 @@ describe('default schedule', () => {
     expect(at(6, '10:00')).toBe('home');
     expect(at(0, '10:00')).toBe('home');
     expect(at(1, '10:00')).toBe('home');
+  });
+});
+
+describe('laneFills', () => {
+  const item = (startQ: number, endQ: number, color = '#000') => ({ startQ, endQ, color, status: 'busy' as const });
+  it('gives overlapping entries their own lanes, the whole group sharing a lane count', () => {
+    // A 10:00-12:30, B 11:00-11:30 overlaps it; C 13:00-14:00 is alone
+    const fills = laneFills([item(40, 50, 'A'), item(44, 46, 'B'), item(52, 56, 'C')], 1000);
+    expect(fills.get(40)).toEqual([{ color: 'A', status: 'busy', lane: 0, lanes: 2, next: true }]);
+    expect(fills.get(44)!.map(f => [f.color, f.lane, f.lanes])).toEqual([['A', 0, 2], ['B', 1, 2]]);
+    expect(fills.get(45)!.find(f => f.color === 'B')!.next).toBe(false);
+    expect(fills.get(52)![0]).toMatchObject({ color: 'C', lane: 0, lanes: 1 });
+  });
+  it('reuses a lane once it is free, and never joins blocks across midnight', () => {
+    const fills = laneFills([item(10, 20, 'A'), item(12, 14, 'B'), item(15, 18, 'C'), item(94, 98, 'D')], 1000);
+    expect(fills.get(16)!.find(f => f.color === 'C')!.lane).toBe(1);
+    expect(fills.get(95)![0].next).toBe(false);
+    expect(fills.get(96)![0].next).toBe(true);
+  });
+});
+
+describe('overlap styles', () => {
+  const data = parseVaultData(fakeApp({
+    Tent: { mm: 'range', 'mm-start': '2000-01-02T09:00', 'mm-end': '2000-01-02T10:00', 'mm-busy-status': 'tentative' },
+    Free: { mm: 'range', 'mm-start': '2000-01-02T11:00', 'mm-end': '2000-01-02T11:30', 'mm-busy-status': 'Free' },
+    Long: { mm: 'range', 'mm-start': '2000-01-03T08:00', 'mm-end': '2000-01-04T18:00' },
+  }), settings, TOTAL);
+  const fills = data.quarterFillsByPerspective.get(DEFAULT_PERSPECTIVE)!;
+  it('keeps the busy status', () => {
+    expect(fills.get(Q + 36)![0].status).toBe('tentative');
+    expect(fills.get(Q + 44)![0].status).toBe('free');
+  });
+  it(`doesn't fill the blocks of a timed entry over ${LONG_QUARTERS / 4} hours, but labels it`, () => {
+    expect(fills.has(2 * Q + 40)).toBe(false);
+    expect(data.labelEntries.some(e => e.title === 'Long')).toBe(true);
   });
 });

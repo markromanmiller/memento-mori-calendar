@@ -122,8 +122,8 @@ export type VaultData = {
   dayBaseColorsByPerspective: Map<string, string[]>;
   /** Colors of individual 15-minute blocks from timed entries, keyed by absolute quarter. */
   quarterColorsByPerspective: Map<string, Map<number, string>>;
-  /** Blocks q whose gap to block q + 1 is filled because one timed entry covers both (same day only). */
-  quarterBridgesByPerspective: Map<string, Set<number>>;
+  /** What fills each 15-minute block covered by timed entries: one BlockFill per entry, by lane. */
+  quarterFillsByPerspective: Map<string, Map<number, BlockFill[]>>;
   /** All ranges + events, for label rendering. */
   labelEntries: LabelEntry[];
   /** Sleep / work / home for a day's 15-minute block, from the settings. */
@@ -222,7 +222,7 @@ export function parseVaultData(
       dayColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, gray]]),
       dayBaseColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, gray]]),
       quarterColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Map()]]),
-      quarterBridgesByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Set()]]),
+      quarterFillsByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Map()]]),
       labelEntries: [],
       schedule: buildSchedule(settings),
       annotations: [],
@@ -249,8 +249,12 @@ export function parseVaultData(
     ongoing: boolean;
     /** mm-category-color: the color of the entry's time-budget category (calendar notes from Trunky). */
     categoryColor?: string;
+    status: BusyStatus;
   };
-  type ParsedEvent = { path: string; day: number; quarter: number | null; title: string; minZoom?: number; categoryColor?: string };
+  type ParsedEvent = {
+    path: string; day: number; quarter: number | null; title: string; minZoom?: number; categoryColor?: string;
+    status: BusyStatus;
+  };
 
   const annotations: Annotation[] = [];
   const ranges: ParsedRange[] = [];
@@ -263,6 +267,8 @@ export function parseVaultData(
     if (!fm?.mm || fm['mm-cancelled'] === true) continue;
 
     const title: string = fm['mm-title'] ?? file.basename;
+    const busy = String(fm['mm-busy-status'] ?? '').toLowerCase();
+    const status: BusyStatus = busy === 'free' ? 'free' : busy === 'tentative' ? 'tentative' : 'busy';
     const categoryColor = typeof fm['mm-category-color'] === 'string' && fm['mm-category-color'].trim()
       ? fm['mm-category-color'].trim() : undefined;
 
@@ -304,7 +310,7 @@ export function parseVaultData(
             duration: isTimed ? endQ - startQ : (e - s + 1) * Q,
             color: color ?? GRAY,
             perspective: (color && perspective) ? perspective : null,
-            path: file.path, title, startLabel, endLabel, minZoom, ongoing, categoryColor,
+            path: file.path, title, startLabel, endLabel, minZoom, ongoing, categoryColor, status,
           });
         }
       }
@@ -314,7 +320,7 @@ export function parseVaultData(
         path: file.path,
         day: dayIndex(when.date, birth),
         quarter: when.minutes === null ? null : Math.min(Q - 1, Math.floor(when.minutes / 15)),
-        title, minZoom, categoryColor,
+        title, minZoom, categoryColor, status,
       });
     }
   }
@@ -354,24 +360,25 @@ export function parseVaultData(
   const dayColorsByPerspective = new Map<string, string[]>();
   const dayBaseColorsByPerspective = new Map<string, string[]>();
   const quarterColorsByPerspective = new Map<string, Map<number, string>>();
-  const quarterBridgesByPerspective = new Map<string, Set<number>>();
-  // Bridges of a timed range's blocks: each block to the next, except across midnight
-  const bridge = (bridges: Set<number>, startQ: number, endQ: number) => {
-    for (let q = Math.max(0, startQ); q < Math.min(totalQuarters, endQ) - 1; q++) {
-      if ((q + 1) % Q !== 0) bridges.add(q);
-    }
-  };
+  const quarterFillsByPerspective = new Map<string, Map<number, BlockFill[]>>();
   const inDays = (d: number) => d >= 0 && d < totalCells;
-  const inQuarters = (q: number) => q >= 0 && q < totalQuarters;
+  // Timed ranges that fill their blocks: not ongoing, and not so long they'd hide everything under them
+  const fillsBlocks = (r: ParsedRange) => r.timed !== null && !r.ongoing && r.timed.endQ - r.timed.startQ <= LONG_QUARTERS;
+  const timedEvents = events.filter(e => e.quarter !== null);
+  const setFills = (name: string, items: TimedItem[]) => {
+    const fills = laneFills(items, totalQuarters);
+    const quarters = new Map<number, string>();
+    for (const [q, fs] of fills) quarters.set(q, fs[0].color);
+    quarterFillsByPerspective.set(name, fills);
+    quarterColorsByPerspective.set(name, quarters);
+  };
 
   // Built-in perspectives: a base (activity or month hue) with entries marked in the theme's text color.
   // Default marks only the 15-minute blocks of timed entries; Old default also marks whole days.
   const schedule = buildSchedule(settings);
   const builtin = (name: string, base: string[], markDays: boolean) => {
-    const quarters = new Map<number, string>();
     // Default fills a timed entry's blocks with its category's color, when it has one
     const blockColor = (c?: string) => (name === DEFAULT_PERSPECTIVE && c) || EVENT_COLOR;
-    const bridges = new Set<number>();
     // Date-only range boundaries and events mark the whole day; skip end day for ongoing ranges
     for (const r of markDays ? ranges : []) {
       if (r.timed) continue;
@@ -380,24 +387,21 @@ export function parseVaultData(
     }
     if (markDays) for (const e of events) if (e.quarter === null && inDays(e.day)) base[e.day] = EVENT_COLOR;
 
-    // Timed entries fill their own blocks, and mark their days when zoomed out
+    // Timed entries fill their own blocks, and in Old default mark their days when zoomed out
     const days = base.slice();
-    for (const r of ranges) {
-      if (!r.timed || r.ongoing) continue;
-      for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, blockColor(r.categoryColor));
-      bridge(bridges, r.timed.startQ, r.timed.endQ);
-      if (markDays) for (let d = Math.max(0, r.startDay); d <= Math.min(totalCells - 1, r.endDay); d++) days[d] = EVENT_COLOR;
+    if (markDays) {
+      for (const r of ranges) {
+        if (!r.timed || r.ongoing) continue;
+        for (let d = Math.max(0, r.startDay); d <= Math.min(totalCells - 1, r.endDay); d++) days[d] = EVENT_COLOR;
+      }
+      for (const e of timedEvents) if (inDays(e.day)) days[e.day] = EVENT_COLOR;
     }
-    for (const e of events) {
-      if (e.quarter === null) continue;
-      const q = e.day * Q + e.quarter;
-      if (inQuarters(q)) quarters.set(q, blockColor(e.categoryColor));
-      if (markDays && inDays(e.day)) days[e.day] = EVENT_COLOR;
-    }
+    setFills(name, [
+      ...ranges.filter(fillsBlocks).map(r => ({ ...r.timed!, color: blockColor(r.categoryColor), status: r.status })),
+      ...timedEvents.map(e => ({ startQ: e.day * Q + e.quarter!, endQ: e.day * Q + e.quarter! + 1, color: blockColor(e.categoryColor), status: e.status })),
+    ]);
     dayColorsByPerspective.set(name, days);
     dayBaseColorsByPerspective.set(name, base);
-    quarterColorsByPerspective.set(name, quarters);
-    quarterBridgesByPerspective.set(name, bridges);
   };
   builtin(DEFAULT_PERSPECTIVE, buildActivityDayColors(totalCells, schedule, settings), false);
   builtin(OLD_DEFAULT_PERSPECTIVE, buildDefaultColors(totalCells, birth), true);
@@ -408,8 +412,6 @@ export function parseVaultData(
   for (const perspective of perspectives) {
     const days = new Array<string>(totalCells).fill(GRAY);
     const base = new Array<string>(totalCells).fill(GRAY);
-    const quarters = new Map<number, string>();
-    const bridges = new Set<number>();
     for (const r of sorted) {
       if (r.perspective !== perspective) continue;
       const from = Math.max(0, r.startDay);
@@ -418,24 +420,71 @@ export function parseVaultData(
         days[d] = r.color;
         if (!r.timed) base[d] = r.color;
       }
-      if (r.timed) {
-        for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, r.color);
-        bridge(bridges, r.timed.startQ, r.timed.endQ);
-      }
     }
     for (const e of events) {
       if (!inDays(e.day)) continue;
       days[e.day] = EVENT_COLOR;
       if (e.quarter === null) base[e.day] = EVENT_COLOR;
-      else quarters.set(e.day * Q + e.quarter, EVENT_COLOR);
     }
+    setFills(perspective, [
+      ...ranges.filter(r => r.perspective === perspective && fillsBlocks(r)).map(r => ({ ...r.timed!, color: r.color, status: r.status })),
+      ...timedEvents.map(e => ({ startQ: e.day * Q + e.quarter!, endQ: e.day * Q + e.quarter! + 1, color: EVENT_COLOR, status: e.status })),
+    ]);
     dayColorsByPerspective.set(perspective, days);
     dayBaseColorsByPerspective.set(perspective, base);
-    quarterColorsByPerspective.set(perspective, quarters);
-    quarterBridgesByPerspective.set(perspective, bridges);
   }
 
-  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, quarterBridgesByPerspective, labelEntries, schedule, annotations };
+  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, quarterFillsByPerspective, labelEntries, schedule, annotations };
+}
+
+/** How an entry shows on its calendar's free/busy view (mm-busy-status); anything else counts as busy. */
+export type BusyStatus = 'busy' | 'tentative' | 'free';
+/** A timed entry longer than this (12 hours) doesn't fill its blocks: it draws like a multi-day range. */
+export const LONG_QUARTERS = 48;
+/** A timed entry's absolute quarters [startQ, endQ), with its color and busy status. */
+export type TimedItem = { startQ: number; endQ: number; color: string; status: BusyStatus };
+/**
+ * One timed entry's share of a 15-minute block. Entries that overlap (transitively) form a group drawn
+ * side by side in `lanes` parallel lanes; each keeps its `lane` for its whole length.
+ */
+export type BlockFill = {
+  color: string; status: BusyStatus; lane: number; lanes: number;
+  /** The same entry continues into the next block of the same day, so the gap between them is filled. */
+  next: boolean;
+};
+
+/** Blocks covered by timed items, each with its items' lanes (first free lane, in start order). */
+export function laneFills(items: TimedItem[], totalQuarters: number): Map<number, BlockFill[]> {
+  const Q = QUARTERS_PER_DAY;
+  const sorted = items.filter(i => i.endQ > i.startQ).sort((a, b) => a.startQ - b.startQ || b.endQ - a.endQ);
+  const out = new Map<number, BlockFill[]>();
+  let group: { item: TimedItem; lane: number }[] = [];
+  let laneEnds: number[] = [];
+  let groupEnd = -Infinity;
+  const flush = () => {
+    for (const { item, lane } of group) {
+      for (let q = Math.max(0, item.startQ); q < Math.min(totalQuarters, item.endQ); q++) {
+        const f: BlockFill = {
+          color: item.color, status: item.status, lane, lanes: laneEnds.length,
+          next: q + 1 < item.endQ && (q + 1) % Q !== 0,
+        };
+        const list = out.get(q);
+        if (list) list.push(f); else out.set(q, [f]);
+      }
+    }
+    group = [];
+    laneEnds = [];
+  };
+  for (const item of sorted) {
+    if (item.startQ >= groupEnd) flush();
+    let lane = laneEnds.findIndex(end => end <= item.startQ);
+    if (lane < 0) { lane = laneEnds.length; laneEnds.push(item.endQ); } else laneEnds[lane] = item.endQ;
+    group.push({ item, lane });
+    groupEnd = Math.max(groupEnd, item.endQ);
+  }
+  flush();
+  for (const list of out.values()) list.sort((a, b) => a.lane - b.lane);
+  return out;
 }
 
 /** Absolute quarters [first, last] an entry covers; date-only ends cover their whole day. */

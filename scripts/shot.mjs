@@ -39,6 +39,10 @@ const scenarios = [
     [...document.querySelectorAll('.menu-item')].find(e => e.textContent.includes('Old default')).click();
   } },
   { name: 'phone-128', vp: PHONE, run: mm => mm.setZoom(128) },
+  // Overlapping entries: lanes, tentative stripes, free outlines, a long appointment as labels only
+  { name: 'phone-overlaps-past', vp: PHONE, run: mm => mm.showDay('2026-10-14', 200) },
+  { name: 'phone-overlaps-future', vp: PHONE, run: mm => mm.showDay('2026-10-19', 200) },
+  { name: 'phone-overlaps-dark', vp: PHONE, theme: 'dark', run: mm => mm.showDay('2026-10-14', 200) },
   // Date label tiers: years, month starts, Sundays, every day, dates with hours
   { name: 'phone-dates-4', vp: PHONE, run: mm => mm.setZoom(4) },
   { name: 'phone-dates-12', vp: PHONE, run: mm => mm.setZoom(12) },

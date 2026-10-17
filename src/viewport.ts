@@ -129,24 +129,58 @@ export function blockUV(cell: Cell, x: number, y: number): [number, number] {
   return [(dx * by - dy * bx) / det, (ax * dy - ay * dx) / det];
 }
 
+type Pt = [number, number];
+const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+
 /**
- * The gap between two neighboring blocks as a quad: the edge of each that faces the other. Filling it
- * joins the blocks without overlapping them, so a translucent fill stays even.
+ * Lane `lane` of `lanes` through block q of a day's blocks: the parallel strip an entry keeps when it
+ * overlaps others. Lanes are counted from the left of the direction of travel (previous block to next),
+ * so a lane continues from block to block; in a block where the path turns, a lane is an L around the
+ * inner corner. `entry` and `exit` are the lane's stretch of the block's entry and exit edges, left end
+ * first, for filling the gap to the next block. One lane is the whole block.
  */
-export function gapQuad(a: [number, number][], b: [number, number][]): [number, number][] {
-  const mean = (ps: [number, number][]) => ps.reduce((m, p) => [m[0] + p[0] / ps.length, m[1] + p[1] / ps.length], [0, 0]);
-  const facing = (ps: [number, number][], [tx, ty]: number[]) => {
+export function laneShape(blocks: Cell[], q: number, lane: number, lanes: number): { poly: Pt[]; entry: [Pt, Pt]; exit: [Pt, Pt] } {
+  const pts = blocks[q].points as Pt[];
+  const c = cellCentroid(blocks[q]);
+  const prev = q > 0 ? cellCentroid(blocks[q - 1]) : null;
+  const next = q < blocks.length - 1 ? cellCentroid(blocks[q + 1]) : null;
+  const nearestEdge = (t: Pt) => {
     let best = 0, bestD = Infinity;
-    for (let i = 0; i < ps.length; i++) {
-      const p = ps[i], q = ps[(i + 1) % ps.length];
-      const d = Math.hypot((p[0] + q[0]) / 2 - tx, (p[1] + q[1]) / 2 - ty);
-      if (d < bestD) { bestD = d; best = i; }
+    for (let j = 0; j < 4; j++) {
+      const [mx, my] = lerp(pts[j], pts[(j + 1) % 4], 0.5);
+      const d = Math.hypot(mx - t[0], my - t[1]);
+      if (d < bestD) { bestD = d; best = j; }
     }
-    return [ps[best], ps[(best + 1) % ps.length]];
+    return best;
   };
-  const [a1, a2] = facing(a, mean(b));
-  const [b1, b2] = facing(b, mean(a));
-  // Join a2 to the nearer end of b's edge so the quad doesn't twist
-  const d = (p: [number, number], q: [number, number]) => Math.hypot(p[0] - q[0], p[1] - q[1]);
-  return d(a2, b1) <= d(a2, b2) ? [a1, a2, b1, b2] : [a1, a2, b2, b1];
+  let inE = prev ? nearestEdge(prev) : -1, outE = next ? nearestEdge(next) : -1;
+  if (inE < 0) inE = (outE + 2) % 4;
+  if (outE < 0) outE = (inE + 2) % 4;
+  const tIn: Pt = prev ? [c[0] - prev[0], c[1] - prev[1]] : [next![0] - c[0], next![1] - c[1]];
+  const tOut: Pt = next ? [next[0] - c[0], next[1] - c[1]] : tIn;
+  const isLeft = (t: Pt, p: Pt) => t[0] * (p[1] - c[1]) - t[1] * (p[0] - c[0]) < 0;
+  // An edge's two ends, left first
+  const ends = (e: number, t: Pt): [Pt, Pt] => {
+    const a = pts[e], b = pts[(e + 1) % 4];
+    return isLeft(t, a) ? [a, b] : [b, a];
+  };
+  const [inL, inR] = ends(inE, tIn);
+  if ((inE + 2) % 4 === outE) {
+    const [outL, outR] = ends(outE, tOut);
+    const k0 = lane / lanes, k1 = (lane + 1) / lanes;
+    const eL = lerp(inL, inR, k0), eR = lerp(inL, inR, k1), oL = lerp(outL, outR, k0), oR = lerp(outL, outR, k1);
+    return { poly: [eL, eR, oR, oL], entry: [eL, eR], exit: [oL, oR] };
+  }
+  // A turn: lanes are L-shapes nested around the corner X the entry and exit edges share
+  const x = outE === (inE + 1) % 4 ? (inE + 1) % 4 : inE;
+  const X = pts[x];
+  const A = pts[x === inE ? (inE + 1) % 4 : inE];             // the entry edge's other end
+  const B = pts[x === outE ? (outE + 1) % 4 : outE];          // the exit edge's other end
+  const xLeft = inL === X;                                    // a left turn: the inner corner is on the left
+  const i = xLeft ? lane : lanes - 1 - lane;
+  const a = i / lanes, b = (i + 1) / lanes;
+  const P = (s: number, t: number): Pt => [X[0] + s * (A[0] - X[0]) + t * (B[0] - X[0]), X[1] + s * (A[1] - X[1]) + t * (B[1] - X[1])];
+  const entry: [Pt, Pt] = xLeft ? [P(a, 0), P(b, 0)] : [P(b, 0), P(a, 0)];
+  const exit: [Pt, Pt] = xLeft ? [P(0, a), P(0, b)] : [P(0, b), P(0, a)];
+  return { poly: [P(a, 0), P(b, 0), P(b, b), P(0, b), P(0, a), P(a, a)], entry, exit };
 }
