@@ -247,8 +247,10 @@ export function parseVaultData(
     endLabel: string | null;
     minZoom?: number;
     ongoing: boolean;
+    /** mm-category-color: the color of the entry's time-budget category (calendar notes from Trunky). */
+    categoryColor?: string;
   };
-  type ParsedEvent = { path: string; day: number; quarter: number | null; title: string; minZoom?: number };
+  type ParsedEvent = { path: string; day: number; quarter: number | null; title: string; minZoom?: number; categoryColor?: string };
 
   const annotations: Annotation[] = [];
   const ranges: ParsedRange[] = [];
@@ -261,6 +263,8 @@ export function parseVaultData(
     if (!fm?.mm || fm['mm-cancelled'] === true) continue;
 
     const title: string = fm['mm-title'] ?? file.basename;
+    const categoryColor = typeof fm['mm-category-color'] === 'string' && fm['mm-category-color'].trim()
+      ? fm['mm-category-color'].trim() : undefined;
 
     const minZoom: number | undefined = (() => {
       const raw = fm['mm-minzoom'];
@@ -300,7 +304,7 @@ export function parseVaultData(
             duration: isTimed ? endQ - startQ : (e - s + 1) * Q,
             color: color ?? GRAY,
             perspective: (color && perspective) ? perspective : null,
-            path: file.path, title, startLabel, endLabel, minZoom, ongoing,
+            path: file.path, title, startLabel, endLabel, minZoom, ongoing, categoryColor,
           });
         }
       }
@@ -310,7 +314,7 @@ export function parseVaultData(
         path: file.path,
         day: dayIndex(when.date, birth),
         quarter: when.minutes === null ? null : Math.min(Q - 1, Math.floor(when.minutes / 15)),
-        title, minZoom,
+        title, minZoom, categoryColor,
       });
     }
   }
@@ -365,6 +369,8 @@ export function parseVaultData(
   const schedule = buildSchedule(settings);
   const builtin = (name: string, base: string[], markDays: boolean) => {
     const quarters = new Map<number, string>();
+    // Default fills a timed entry's blocks with its category's color, when it has one
+    const blockColor = (c?: string) => (name === DEFAULT_PERSPECTIVE && c) || EVENT_COLOR;
     const bridges = new Set<number>();
     // Date-only range boundaries and events mark the whole day; skip end day for ongoing ranges
     for (const r of markDays ? ranges : []) {
@@ -378,14 +384,14 @@ export function parseVaultData(
     const days = base.slice();
     for (const r of ranges) {
       if (!r.timed || r.ongoing) continue;
-      for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, EVENT_COLOR);
+      for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, blockColor(r.categoryColor));
       bridge(bridges, r.timed.startQ, r.timed.endQ);
       if (markDays) for (let d = Math.max(0, r.startDay); d <= Math.min(totalCells - 1, r.endDay); d++) days[d] = EVENT_COLOR;
     }
     for (const e of events) {
       if (e.quarter === null) continue;
       const q = e.day * Q + e.quarter;
-      if (inQuarters(q)) quarters.set(q, EVENT_COLOR);
+      if (inQuarters(q)) quarters.set(q, blockColor(e.categoryColor));
       if (markDays && inDays(e.day)) days[e.day] = EVENT_COLOR;
     }
     dayColorsByPerspective.set(name, days);

@@ -50,6 +50,7 @@ describe('timed entries', () => {
     Trip: { mm: 'range', 'mm-start': '2000-01-05T18:00', 'mm-end': '2000-01-07' },
     Work: { mm: 'range', 'mm-start': '2000-01-02T08:00', 'mm-end': '2000-01-02T12:00', 'mm-color': '#f00', 'mm-color-perspective': 'Life' },
     Birthday: { mm: 'event', 'mm-date': '2000-01-10' },
+    Class: { mm: 'range', 'mm-start': '2000-01-04T10:00', 'mm-end': '2000-01-04T11:00', 'mm-category-color': '#e05299' },
   }), settings, TOTAL);
   const quarters = data.quarterColorsByPerspective.get(DEFAULT_PERSPECTIVE)!;
   const days = data.dayColorsByPerspective.get(DEFAULT_PERSPECTIVE)!;
@@ -57,6 +58,13 @@ describe('timed entries', () => {
 
   it('fills exactly the blocks a timed range covers', () => {
     for (let q = Q + 50; q < Q + 58; q++) expect(quarters.has(q)).toBe(q >= Q + 52 && q < Q + 56);
+  });
+
+  it('fills a categorized entry with its category color in Default only', () => {
+    expect(quarters.get(3 * Q + 40)).toBe('#e05299');
+    expect(quarters.get(3 * Q + 52)).toBeUndefined();
+    expect(quarters.get(Q + 52)).toBe('default');
+    expect(data.quarterColorsByPerspective.get(OLD_DEFAULT_PERSPECTIVE)!.get(3 * Q + 40)).toBe('default');
   });
 
   it('puts a timed event in the block containing its time', () => {
