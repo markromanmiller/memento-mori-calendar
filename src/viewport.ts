@@ -128,3 +128,25 @@ export function blockUV(cell: Cell, x: number, y: number): [number, number] {
   const dx = x - p0[0], dy = y - p0[1];
   return [(dx * by - dy * bx) / det, (ax * dy - ay * dx) / det];
 }
+
+/**
+ * The gap between two neighboring blocks as a quad: the edge of each that faces the other. Filling it
+ * joins the blocks without overlapping them, so a translucent fill stays even.
+ */
+export function gapQuad(a: [number, number][], b: [number, number][]): [number, number][] {
+  const mean = (ps: [number, number][]) => ps.reduce((m, p) => [m[0] + p[0] / ps.length, m[1] + p[1] / ps.length], [0, 0]);
+  const facing = (ps: [number, number][], [tx, ty]: number[]) => {
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < ps.length; i++) {
+      const p = ps[i], q = ps[(i + 1) % ps.length];
+      const d = Math.hypot((p[0] + q[0]) / 2 - tx, (p[1] + q[1]) / 2 - ty);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return [ps[best], ps[(best + 1) % ps.length]];
+  };
+  const [a1, a2] = facing(a, mean(b));
+  const [b1, b2] = facing(b, mean(a));
+  // Join a2 to the nearer end of b's edge so the quad doesn't twist
+  const d = (p: [number, number], q: [number, number]) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  return d(a2, b1) <= d(a2, b2) ? [a1, a2, b1, b2] : [a1, a2, b2, b1];
+}

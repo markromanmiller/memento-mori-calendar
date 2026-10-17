@@ -122,6 +122,8 @@ export type VaultData = {
   dayBaseColorsByPerspective: Map<string, string[]>;
   /** Colors of individual 15-minute blocks from timed entries, keyed by absolute quarter. */
   quarterColorsByPerspective: Map<string, Map<number, string>>;
+  /** Blocks q whose gap to block q + 1 is filled because one timed entry covers both (same day only). */
+  quarterBridgesByPerspective: Map<string, Set<number>>;
   /** All ranges + events, for label rendering. */
   labelEntries: LabelEntry[];
   /** Sleep / work / home for a day's 15-minute block, from the settings. */
@@ -220,6 +222,7 @@ export function parseVaultData(
       dayColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, gray]]),
       dayBaseColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, gray]]),
       quarterColorsByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Map()]]),
+      quarterBridgesByPerspective: new Map([[DEFAULT_PERSPECTIVE, new Set()]]),
       labelEntries: [],
       schedule: buildSchedule(settings),
       annotations: [],
@@ -347,6 +350,13 @@ export function parseVaultData(
   const dayColorsByPerspective = new Map<string, string[]>();
   const dayBaseColorsByPerspective = new Map<string, string[]>();
   const quarterColorsByPerspective = new Map<string, Map<number, string>>();
+  const quarterBridgesByPerspective = new Map<string, Set<number>>();
+  // Bridges of a timed range's blocks: each block to the next, except across midnight
+  const bridge = (bridges: Set<number>, startQ: number, endQ: number) => {
+    for (let q = Math.max(0, startQ); q < Math.min(totalQuarters, endQ) - 1; q++) {
+      if ((q + 1) % Q !== 0) bridges.add(q);
+    }
+  };
   const inDays = (d: number) => d >= 0 && d < totalCells;
   const inQuarters = (q: number) => q >= 0 && q < totalQuarters;
 
@@ -355,6 +365,7 @@ export function parseVaultData(
   const schedule = buildSchedule(settings);
   const builtin = (name: string, base: string[], markDays: boolean) => {
     const quarters = new Map<number, string>();
+    const bridges = new Set<number>();
     // Date-only range boundaries and events mark the whole day; skip end day for ongoing ranges
     for (const r of markDays ? ranges : []) {
       if (r.timed) continue;
@@ -368,6 +379,7 @@ export function parseVaultData(
     for (const r of ranges) {
       if (!r.timed || r.ongoing) continue;
       for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, EVENT_COLOR);
+      bridge(bridges, r.timed.startQ, r.timed.endQ);
       if (markDays) for (let d = Math.max(0, r.startDay); d <= Math.min(totalCells - 1, r.endDay); d++) days[d] = EVENT_COLOR;
     }
     for (const e of events) {
@@ -379,6 +391,7 @@ export function parseVaultData(
     dayColorsByPerspective.set(name, days);
     dayBaseColorsByPerspective.set(name, base);
     quarterColorsByPerspective.set(name, quarters);
+    quarterBridgesByPerspective.set(name, bridges);
   };
   builtin(DEFAULT_PERSPECTIVE, buildActivityDayColors(totalCells, schedule, settings), false);
   builtin(OLD_DEFAULT_PERSPECTIVE, buildDefaultColors(totalCells, birth), true);
@@ -390,6 +403,7 @@ export function parseVaultData(
     const days = new Array<string>(totalCells).fill(GRAY);
     const base = new Array<string>(totalCells).fill(GRAY);
     const quarters = new Map<number, string>();
+    const bridges = new Set<number>();
     for (const r of sorted) {
       if (r.perspective !== perspective) continue;
       const from = Math.max(0, r.startDay);
@@ -400,6 +414,7 @@ export function parseVaultData(
       }
       if (r.timed) {
         for (let q = Math.max(0, r.timed.startQ); q < Math.min(totalQuarters, r.timed.endQ); q++) quarters.set(q, r.color);
+        bridge(bridges, r.timed.startQ, r.timed.endQ);
       }
     }
     for (const e of events) {
@@ -411,9 +426,10 @@ export function parseVaultData(
     dayColorsByPerspective.set(perspective, days);
     dayBaseColorsByPerspective.set(perspective, base);
     quarterColorsByPerspective.set(perspective, quarters);
+    quarterBridgesByPerspective.set(perspective, bridges);
   }
 
-  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, labelEntries, schedule, annotations };
+  return { perspectives, dayColorsByPerspective, dayBaseColorsByPerspective, quarterColorsByPerspective, quarterBridgesByPerspective, labelEntries, schedule, annotations };
 }
 
 /** Absolute quarters [first, last] an entry covers; date-only ends cover their whole day. */

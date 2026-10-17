@@ -7,7 +7,7 @@ import {
   Activity, ACTIVITIES,
   DEFAULT_PERSPECTIVE, BUILTIN_PERSPECTIVES,
 } from './data';
-import { blockPoint, blockUV, cellAt, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
+import { blockPoint, blockUV, cellAt, gapQuad, cellCentroid, fitScale, todayView, View, MIN_ZOOM, MAX_ZOOM, isQuarterView } from './viewport';
 import { MementoSettings, DEFAULT_SETTINGS, MementoSettingTab } from './settings';
 
 const VIEW_TYPE = 'memento-mori';
@@ -120,6 +120,12 @@ const MINZOOM_CEIL = Math.log2(MAX_ZOOM);
 const isPlainColor = (c: string) => c.startsWith('hsl(') || c === GRAY || (ACTIVITIES as string[]).includes(c);
 
 /** Default perspective: colors for sleep, work and home hours, per theme. */
+/**
+ * Opacity of a future cell or block: entries 0.5, plain colors 0.2; activities 0.45, since at 0.2 sleep
+ * and home both wash out to near-white.
+ */
+const futureAlpha = (c: string) => (ACTIVITIES as string[]).includes(c) ? 0.45 : isPlainColor(c) ? 0.2 : 0.5;
+
 /** Default perspective: work in Illinois Tech red, home gray-blue, sleep pale. */
 const ACTIVITY_COLORS: Record<'light' | 'dark', Record<Activity, string>> = {
   light: { sleep: 'hsl(215, 15%, 90%)', home: 'hsl(212, 22%, 64%)', work: '#cc0000' },
@@ -464,7 +470,7 @@ class MementoView extends ItemView {
         : `hsl(${Math.round((i / total) * 360)}, 45%, 65%)`;
       ctx.fillStyle = this.resolveColor(rawColor, themeTextColor);
       // Plain cells (month hsl or gray placeholder) fade to 0.2; event/range cells to 0.5
-      ctx.globalAlpha = i > this.todayIndex ? (isPlainColor(rawColor) ? 0.2 : 0.5) : 1.0;
+      ctx.globalAlpha = i > this.todayIndex ? futureAlpha(rawColor) : 1.0;
       tracePolygon(ctx, this.cells[i].points);
       ctx.fill();
     }
@@ -493,6 +499,7 @@ class MementoView extends ItemView {
     const total = this.cells.length;
     const base = this.vaultData?.dayBaseColorsByPerspective.get(this.currentPerspective);
     const blockColors = this.vaultData?.quarterColorsByPerspective.get(this.currentPerspective);
+    const bridges = this.vaultData?.quarterBridgesByPerspective.get(this.currentPerspective);
     const hasBase = base?.length === total;
     const nowQ = getNowQuarter(this.plugin.settings.birthDate);
     const resolve = (c: string) => this.resolveColor(c, themeTextColor);
@@ -519,13 +526,20 @@ class MementoView extends ItemView {
       for (let q = 0; q < QUARTERS_PER_DAY; q++) {
         const abs = d * QUARTERS_PER_DAY + q;
         const raw = blockColors?.get(abs) ?? (schedule ? schedule(d, q) : dayColor);
-        ctx.globalAlpha = abs > nowQ ? (isPlainColor(raw) ? 0.2 : 0.5) : 1.0;
+        ctx.globalAlpha = abs > nowQ ? futureAlpha(raw) : 1.0;
         ctx.fillStyle = resolve(raw);
         tracePolygon(ctx, blocks[q].points);
         ctx.fill();
         // Hour mark: shade the first block of each hour
         if (q % 4 === 0) {
           ctx.fillStyle = hourTick;
+          ctx.fill();
+        }
+        // One timed entry covering this block and the next: fill the gap between them
+        const next = blockColors?.get(abs + 1);
+        if (bridges?.has(abs) && next === raw) {
+          ctx.fillStyle = resolve(raw);
+          tracePolygon(ctx, gapQuad(blocks[q].points, blocks[q + 1].points));
           ctx.fill();
         }
       }

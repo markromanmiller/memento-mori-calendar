@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildGeometry } from '../src/geometry';
 import {
-  DEFAULT_ZOOM, blockPoint, blockUV, cellAt, cellCentroid, fitScale, fitView, todayView, visibleCells,
+  DEFAULT_ZOOM, blockPoint, blockUV, cellAt, cellCentroid, fitScale, gapQuad, fitView, todayView, visibleCells,
 } from '../src/viewport';
 
 const cells = buildGeometry(89).days;
@@ -88,5 +88,16 @@ describe('block frame', () => {
     const [cx, cy] = cellCentroid(block);
     expect(x).toBeCloseTo(cx, 9);
     expect(y).toBeCloseTo(cy, 9);
+  });
+});
+
+describe('gapQuad', () => {
+  it('spans exactly the gap between two side-by-side squares', () => {
+    const a: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
+    const b: [number, number][] = [[2, 0], [3, 0], [3, 1], [2, 1]];
+    const quad = gapQuad(a, b);
+    expect(quad.map(p => p[0]).sort()).toEqual([1, 1, 2, 2]);
+    // Not twisted: the two edges at x = 1 and x = 2 are joined top to top, bottom to bottom
+    expect(quad[1][1]).toBe(quad[2][1]);
   });
 });
